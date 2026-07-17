@@ -7,6 +7,7 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.server.auth.*
+import io.ktor.http.URLBuilder
 import kotlinx.serialization.Serializable
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
@@ -28,8 +29,11 @@ enum class OAuthProvider : KoinComponent {
         get() = when (this) {
             DISCORD -> { token ->
                 val raw = httpClient.get("https://discord.com/api/users/@me") {
-                    headers { append(HttpHeaders.Authorization, "Bearer $token") }
+                    headers {
+                        append(HttpHeaders.Authorization, "Bearer $token")
+                    }
                 }.body<DiscordRaw>()
+
                 OAuthUserInfo(
                     id = raw.id,
                     email = raw.email,
@@ -39,8 +43,11 @@ enum class OAuthProvider : KoinComponent {
 
             GOOGLE -> { token ->
                 val raw = httpClient.get("https://openidconnect.googleapis.com/v1/userinfo") {
-                    headers { append(HttpHeaders.Authorization, "Bearer $token") }
+                    headers {
+                        append(HttpHeaders.Authorization, "Bearer $token")
+                    }
                 }.body<GoogleRaw>()
+
                 OAuthUserInfo(
                     id = raw.sub,
                     email = raw.email,
@@ -77,7 +84,9 @@ enum class OAuthProvider : KoinComponent {
                     "https://www.googleapis.com/auth/userinfo.profile",
                     "https://www.googleapis.com/auth/userinfo.email"
                 ),
-                extraAuthParameters = listOf("access_type" to "offline"),
+                extraAuthParameters = listOf(
+                    "access_type" to "offline"
+                ),
                 onStateCreated = { call, state ->
                     call.request.queryParameters["redirectUrl"]?.let {
                         redirects[state] = it

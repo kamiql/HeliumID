@@ -2,6 +2,7 @@ package dev.kamiql
 
 import dev.kamiql.routes.AdminRoutes
 import dev.kamiql.routes.AuthRoutes
+import dev.kamiql.routes.DataRoutes
 import dev.kamiql.routes.UserRoutes
 import dev.kamiql.routes.VerificationRoutes
 import io.ktor.server.application.*
@@ -17,7 +18,8 @@ fun Application.routing() {
             AuthRoutes,
             UserRoutes,
             VerificationRoutes,
-            AdminRoutes
+            AdminRoutes,
+            DataRoutes,
         ).forEach { router ->
             with(router) {
                 routes()

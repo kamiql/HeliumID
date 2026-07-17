@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react"
-import { useAuthStore } from "../../stores/auth.store"
+import { useAuthStore } from "../stores/auth.store.ts"
 
 export default function AuthProvider({ children }: { children: ReactNode }) {
     const initialized = useAuthStore((state) => state.initialized)

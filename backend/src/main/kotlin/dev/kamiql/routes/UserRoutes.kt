@@ -2,24 +2,31 @@ package dev.kamiql.routes
 
 import dev.kamiql.Router
 import dev.kamiql.UserAttributeKey
+import dev.kamiql.checkPasswordRequirements
 import dev.kamiql.domain.api.auth.ResetPasswordRequest
-import dev.kamiql.domain.api.user.EditUserInformation
+import dev.kamiql.domain.api.user.EditUserInformationRequest
 import dev.kamiql.domain.auth.OAuthProvider
+import dev.kamiql.domain.security.Permission
+import dev.kamiql.domain.security.Role
 import dev.kamiql.domain.session.UserSession
 import dev.kamiql.domain.user.Email
-import dev.kamiql.middleware.UserMiddleware
+import dev.kamiql.domain.user.User
+import dev.kamiql.middleware.types.UserMiddleware
 import dev.kamiql.middleware.middleware
+import dev.kamiql.middleware.types.EmailVerificationMiddleware
 import dev.kamiql.services.BCryptService
 import dev.kamiql.services.VerificationType
 import dev.kamiql.services.verify
 import dev.kamiql.storage.CredentialRepository
+import dev.kamiql.storage.RoleRepository
 import dev.kamiql.storage.UserRepository
 import io.ktor.http.*
 import io.ktor.server.request.*
-import io.ktor.server.response.*
+import io.ktor.server.response.respond
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
 import org.koin.core.component.KoinComponent
+import java.util.UUID
 
 object UserRoutes : Router, KoinComponent {
     override fun Routing.routes() {
@@ -39,6 +46,10 @@ object UserRoutes : Router, KoinComponent {
             }
 
             route("/password") {
+                middleware {
+                    register(EmailVerificationMiddleware)
+                }
+
                 post("/reset") {
 
                 }
@@ -52,6 +63,10 @@ object UserRoutes : Router, KoinComponent {
                         return@post call.respond(HttpStatusCode.Unauthorized)
                     }
 
+                    req.new.checkPasswordRequirements().filter { !it.value }.takeIf { it.isNotEmpty() }?.let {
+                        return@post call.respond(HttpStatusCode.Conflict, it)
+                    }
+
                     CredentialRepository[user.id] = user.credentials().copy(
                         passwordHash = BCryptService.hash(req.new)
                     )
@@ -62,6 +77,10 @@ object UserRoutes : Router, KoinComponent {
             }
 
             route("/oauth2") {
+                middleware {
+                    register(EmailVerificationMiddleware)
+                }
+
                 route("/{provider}") {
                     post("/remove") {
                         val user = call.attributes[UserAttributeKey]
@@ -93,7 +112,7 @@ object UserRoutes : Router, KoinComponent {
 
                 post {
                     val user = call.attributes[UserAttributeKey]
-                    val req = call.receive<EditUserInformation>()
+                    val req = call.receive<EditUserInformationRequest>()
 
                     val new = user.copy(
                         username = req.username ?: user.username,

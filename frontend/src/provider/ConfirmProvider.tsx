@@ -9,7 +9,7 @@ import {
     Typography,
 } from "@mui/material"
 import {type ReactNode, useState} from "react"
-import {ConfirmContext} from "../hooks/useConfirm"
+import {ConfirmContext} from "../hooks/useConfirm.ts"
 
 export type ConfirmOptions = {
     title?: string

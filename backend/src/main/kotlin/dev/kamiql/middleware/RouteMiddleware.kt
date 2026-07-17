@@ -16,7 +16,7 @@ class RouteMiddlewareConfig {
 
 fun Route.middleware(configure: RouteMiddlewareConfig.() -> Unit = {}) = install(createRouteScopedPlugin("middleware-${UUID.randomUUID()}", ::RouteMiddlewareConfig) {
     on(AuthenticationChecked) { call ->
-        pluginConfig.middlewares.forEach { middleware ->
+        pluginConfig.middlewares.sortedByDescending { it.priority }.forEach { middleware ->
             when (val res = middleware.execute(call)) {
                 is MiddlewareResult.Pass -> return@forEach
                 is MiddlewareResult.Block -> {

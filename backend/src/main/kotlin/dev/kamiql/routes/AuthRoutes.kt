@@ -1,14 +1,18 @@
 package dev.kamiql.routes
 
 import dev.kamiql.Router
+import dev.kamiql.checkPasswordRequirements
 import dev.kamiql.domain.api.auth.CreateUserRequest
 import dev.kamiql.domain.api.auth.LoginUserRequest
 import dev.kamiql.domain.auth.Credentials
+import dev.kamiql.domain.auth.OAuthData
 import dev.kamiql.domain.auth.OAuthProvider
 import dev.kamiql.domain.session.UserSession
 import dev.kamiql.domain.user.Account
 import dev.kamiql.domain.user.Email
 import dev.kamiql.domain.user.User
+import dev.kamiql.middleware.middleware
+import dev.kamiql.middleware.types.EmailVerificationMiddleware
 import dev.kamiql.redirects
 import dev.kamiql.services.BCryptService
 import dev.kamiql.storage.CredentialRepository
@@ -39,6 +43,10 @@ object AuthRoutes : Router {
                         HttpStatusCode.Conflict,
                         "Email already exists"
                     )
+                }
+
+                req.password.checkPasswordRequirements().filter { !it.value }.takeIf { it.isNotEmpty() }?.let {
+                    return@post call.respond(HttpStatusCode.Conflict, it)
                 }
 
                 val user = User(
@@ -113,18 +121,20 @@ object AuthRoutes : Router {
                                         val credentials = user.credentials()
 
                                         CredentialRepository[user.id] = credentials.apply {
-                                            accounts[provider] = Account(
+                                            accounts[provider] = OAuthData(
                                                 provider,
                                                 userInfo.id,
-                                                userInfo.email,
-                                                userInfo.username,
                                                 principal.accessToken,
                                                 principal.refreshToken,
                                             )
                                         }
 
                                         UserRepository[user.id] = user.apply {
-                                            linkedAccounts.add(provider)
+                                            linkedAccounts[provider] = Account(
+                                                userInfo.id,
+                                                userInfo.email,
+                                                userInfo.username,
+                                            )
                                         }
 
                                         redirects.remove(state)?.let { redirect ->

@@ -15,20 +15,21 @@ import {
     Typography,
 } from "@mui/material"
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"
-import { useCallback, useState } from "react"
-import { useAuthStore } from "../../../stores/auth.store.ts"
-import { useUser } from "../../../hooks/useUser.ts"
-import { userApi } from "../../../api/user.ts"
+import {useCallback, useState} from "react"
+import {useAuthStore} from "../../../stores/auth.store.ts"
+import {useUser} from "../../../hooks/useUser.ts"
+import {userApi} from "../../../api/user.ts"
 import VerificationDialog from "../../../components/VerificationDialog.tsx"
 import PasswordField from "../../../components/PasswordField.tsx"
 import axios from "axios"
-import { DiscordIcon, GoogleIcon } from "../../../components/global/Icons.tsx"
-import { authApi } from "../../../api/auth.ts"
+import {DiscordIcon, GoogleIcon} from "../../../components/global/Icons.tsx"
+import {authApi} from "../../../api/auth.ts"
 import {useConfirm} from "../../../hooks/useConfirm.ts";
+import EmailField from "../../../components/EmailField.tsx";
 
 const PROVIDERS = [
-    { id: "google", name: "Google", icon: GoogleIcon },
-    { id: "discord", name: "Discord", icon: DiscordIcon },
+    {id: "google", name: "Google", icon: GoogleIcon},
+    {id: "discord", name: "Discord", icon: DiscordIcon}
 ] as const
 
 export default function AccountPage() {
@@ -143,7 +144,11 @@ export default function AccountPage() {
                 axios.isAxiosError(error) &&
                 error.response?.status === 401
             ) {
-                setPasswordError("The current password is incorrect")
+                setPasswordError(
+                    error.response?.data?.message ||
+                    error.response?.data ||
+                    "Failed to change password"
+                )
                 return
             }
 
@@ -209,7 +214,7 @@ export default function AccountPage() {
         }
     }
 
-    const linkedAccounts = user.linkedAccounts.map(id => id.toLowerCase())
+    const linkedAccounts = user.linkedAccounts
 
     return (
         <>
@@ -219,7 +224,18 @@ export default function AccountPage() {
                     mx: "auto",
                 }}
             >
-                <Box sx={{ mb: 4 }}>
+                {!user.emailVerified && (
+                    <Alert
+                        severity="warning"
+                        sx={{
+                            mb: 2
+                        }}
+                    >
+                        Your email is not verified yet, some actions may not be available
+                    </Alert>
+                )}
+
+                <Box sx={{mb: 4}}>
                     <Typography
                         variant="h4"
                         sx={{
@@ -275,7 +291,7 @@ export default function AccountPage() {
                                     </Typography>
                                 </Box>
 
-                                <Divider />
+                                <Divider/>
 
                                 <Box
                                     sx={{
@@ -297,8 +313,8 @@ export default function AccountPage() {
                                             Username
                                         </Typography>
 
-                                        <Typography sx={{ mt: 0.5 }}>
-                                            @{user.username}
+                                        <Typography sx={{mt: 0.5}}>
+                                            {user.username}
                                         </Typography>
                                     </Box>
 
@@ -312,7 +328,7 @@ export default function AccountPage() {
                                             Email
                                         </Typography>
 
-                                        <Typography sx={{ mt: 0.5 }}>
+                                        <Typography sx={{mt: 0.5}}>
                                             {user.email}
                                         </Typography>
                                     </Box>
@@ -327,7 +343,7 @@ export default function AccountPage() {
                                             First name
                                         </Typography>
 
-                                        <Typography sx={{ mt: 0.5 }}>
+                                        <Typography sx={{mt: 0.5}}>
                                             {user.firstName}
                                         </Typography>
                                     </Box>
@@ -342,7 +358,7 @@ export default function AccountPage() {
                                             Last name
                                         </Typography>
 
-                                        <Typography sx={{ mt: 0.5 }}>
+                                        <Typography sx={{mt: 0.5}}>
                                             {user.lastName}
                                         </Typography>
                                     </Box>
@@ -388,11 +404,12 @@ export default function AccountPage() {
                                     </Typography>
                                 </Box>
 
-                                <Divider />
+                                <Divider/>
 
                                 <Button
                                     variant="outlined"
                                     onClick={handleOpenPassword}
+                                    disabled={!user.emailVerified}
                                 >
                                     Change password
                                 </Button>
@@ -403,7 +420,7 @@ export default function AccountPage() {
                     <Card
                         sx={{
                             flex: "1 1 300px",
-                            minWidth: "250px",
+                            minWidth: "30%",
                         }}
                     >
                         <CardContent>
@@ -430,7 +447,7 @@ export default function AccountPage() {
                                     </Typography>
                                 </Box>
 
-                                <Divider />
+                                <Divider/>
 
                                 <Chip
                                     label={
@@ -466,7 +483,7 @@ export default function AccountPage() {
                     <Card
                         sx={{
                             flex: "1 1 300px",
-                            minWidth: "250px",
+                            minWidth: "60%",
                         }}
                     >
                         <CardContent>
@@ -488,18 +505,16 @@ export default function AccountPage() {
                                             color: "text.secondary",
                                         }}
                                     >
-                                        Link your social accounts for seamless
-                                        sign‑in.
+                                        Link your social accounts for seamless sign-in.
                                     </Typography>
                                 </Box>
 
-                                <Divider />
+                                <Divider/>
 
                                 <Stack spacing={2}>
                                     {PROVIDERS.map((provider) => {
-                                        const isLinked = linkedAccounts.includes(
-                                            provider.id
-                                        )
+                                        const account =
+                                            linkedAccounts[provider.id.toUpperCase()]
                                         const Icon = provider.icon
 
                                         return (
@@ -508,59 +523,81 @@ export default function AccountPage() {
                                                 sx={{
                                                     display: "flex",
                                                     alignItems: "center",
-                                                    justifyContent:
-                                                        "space-between",
+                                                    justifyContent: "space-between",
+                                                    gap: 2,
                                                 }}
                                             >
                                                 <Box
                                                     sx={{
                                                         display: "flex",
                                                         alignItems: "center",
-                                                        gap: 1,
+                                                        gap: 1.5,
+                                                        minWidth: 0,
                                                     }}
                                                 >
-                                                    <Icon />
-                                                    <Typography>
-                                                        {provider.name}
-                                                    </Typography>
+                                                    <Icon/>
+
+                                                    <Box sx={{minWidth: 0}}>
+                                                        <Typography
+                                                            sx={{
+                                                                fontWeight: 500,
+                                                            }}
+                                                        >
+                                                            {provider.name}
+                                                        </Typography>
+
+                                                        {account && (
+                                                            <Typography
+                                                                variant="body2"
+                                                                sx={{
+                                                                    color: "text.secondary",
+                                                                    overflow: "hidden",
+                                                                    textOverflow: "ellipsis",
+                                                                    whiteSpace: "nowrap",
+                                                                }}
+                                                            >
+                                                                {account.username}
+                                                                {account.email && ` · ${account.email}`}
+                                                            </Typography>
+                                                        )}
+                                                    </Box>
                                                 </Box>
 
-                                                {isLinked ? (
-                                                    <>
-                                                        <Box sx={{
+                                                {account ? (
+                                                    <Box
+                                                        sx={{
                                                             display: "flex",
                                                             alignItems: "center",
                                                             gap: 1,
-                                                        }}>
-                                                            <Chip
-                                                                label="Linked"
-                                                                color="success"
-                                                                size="small"
-                                                                icon={
-                                                                    <CheckCircleIcon />
-                                                                }
-                                                            />
+                                                            flexShrink: 0,
+                                                        }}
+                                                    >
+                                                        <Chip
+                                                            label="Linked"
+                                                            color="success"
+                                                            size="small"
+                                                            icon={<CheckCircleIcon/>}
+                                                        />
 
-                                                            <Button
-                                                                variant="contained"
-                                                                size="small"
-                                                                color="error"
-                                                                onClick={() => {
-                                                                    handleRemoveOAuthProvider(provider.id)
-                                                                }}
-                                                            >
-                                                                Remove
-                                                            </Button>
-                                                        </Box>
-                                                    </>
+                                                        <Button
+                                                            variant="contained"
+                                                            size="small"
+                                                            color="error"
+                                                            onClick={() =>
+                                                                handleRemoveOAuthProvider(
+                                                                    provider.id
+                                                                )
+                                                            }
+                                                        >
+                                                            Remove
+                                                        </Button>
+                                                    </Box>
                                                 ) : (
                                                     <Button
                                                         variant="outlined"
                                                         size="small"
                                                         onClick={() =>
-                                                            authApi.oauth(
-                                                                provider.id
-                                                            )
+                                                            authApi.oauth(provider.id)
                                                         }
                                                     >
                                                         Link
@@ -586,7 +623,7 @@ export default function AccountPage() {
 
                 <DialogContent>
                     <Stack spacing={2}>
-                        <Divider />
+                        <Divider/>
 
                         <TextField
                             margin="normal"
@@ -624,17 +661,13 @@ export default function AccountPage() {
                             }}
                         />
 
-                        <TextField
+                        <EmailField
                             margin="normal"
                             required
                             fullWidth
                             label="Email"
-                            type="email"
                             value={email}
-                            onChange={(event) => {
-                                setEmail(event.target.value)
-                                setPersonalError("")
-                            }}
+                            onType={text => setEmail(text)}
                         />
 
                         {email !== user.email && (
@@ -648,7 +681,7 @@ export default function AccountPage() {
                             <Typography
                                 color="error"
                                 variant="body2"
-                                sx={{ mt: 1 }}
+                                sx={{mt: 1}}
                             >
                                 {personalError}
                             </Typography>
@@ -735,7 +768,7 @@ export default function AccountPage() {
                             <Typography
                                 color="error"
                                 variant="body2"
-                                sx={{ mt: 1 }}
+                                sx={{mt: 1}}
                             >
                                 {passwordError}
                             </Typography>

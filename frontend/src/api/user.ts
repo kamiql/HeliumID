@@ -1,5 +1,19 @@
 import { api } from "./axios.ts"
 
+export type Account = {
+    id: string
+    email: string
+    username: string
+}
+
+export type Role = {
+    id: string
+    name: string
+    color: string
+    permissions: string[]
+    inherits: string[]
+}
+
 export type User = {
     id: string
     username: string
@@ -7,7 +21,8 @@ export type User = {
     lastName: string
     email: string
     emailVerified: boolean
-    linkedAccounts: string[]
+    linkedAccounts: Record<string, Account>
+    roles: string[]
     createdAt: Date
 }
 

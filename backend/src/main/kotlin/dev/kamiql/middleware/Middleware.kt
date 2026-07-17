@@ -2,6 +2,7 @@ package dev.kamiql.middleware
 
 import io.ktor.server.application.*
 
-fun interface Middleware {
+interface Middleware {
+    val priority: Int
     suspend fun execute(call: ApplicationCall): MiddlewareResult
 }

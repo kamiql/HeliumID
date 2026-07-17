@@ -6,8 +6,9 @@ import {
     Box,
     type TextFieldProps
 } from "@mui/material";
-import { Visibility, VisibilityOff } from "@mui/icons-material";
-import { useState } from "react";
+import {Visibility, VisibilityOff} from "@mui/icons-material";
+import {useState} from "react";
+import {usePasswordRequirements} from "../hooks/usePasswordRequirements.ts";
 
 type PasswordFieldProps = Omit<TextFieldProps, "type" | "onChange"> & {
     value: string;
@@ -15,29 +16,6 @@ type PasswordFieldProps = Omit<TextFieldProps, "type" | "onChange"> & {
     validate?: boolean;
     matches?: string;
 };
-
-const requirements = [
-    {
-        label: "8-32 characters",
-        test: (value: string) => value.length >= 8 && value.length <= 32
-    },
-    {
-        label: "One uppercase letter",
-        test: (value: string) => /[A-Z]/.test(value)
-    },
-    {
-        label: "One lowercase letter",
-        test: (value: string) => /[a-z]/.test(value)
-    },
-    {
-        label: "One number",
-        test: (value: string) => /[0-9]/.test(value)
-    },
-    {
-        label: "One special character",
-        test: (value: string) => /[^A-Za-z0-9]/.test(value)
-    }
-];
 
 export default function PasswordField({
                                           value,
@@ -51,12 +29,15 @@ export default function PasswordField({
     const [show, setShow] = useState(false);
     const [touched, setTouched] = useState(false);
 
+    const requirements = usePasswordRequirements();
     const matchesValid = value === matches;
 
     const hasError = validate && touched && value.length > 0 && (
         matches !== undefined
             ? !matchesValid
-            : requirements.some((req) => !req.test(value))
+            : requirements !== null && Object.values(requirements).some(
+            (requirement) => !new RegExp(requirement.regex).test(value)
+        )
     );
 
     return (
@@ -70,14 +51,14 @@ export default function PasswordField({
             helperText={
                 helperText ??
                 (
-                    validate && matches === undefined && value.length > 0 ? (
-                        <Box sx={{ mt: 1 }}>
-                            {requirements.map((req) => {
-                                const valid = req.test(value);
+                    validate && matches === undefined && value.length > 0 && requirements !== null ? (
+                        <Box sx={{mt: 1}}>
+                            {Object.entries(requirements).map(([key, requirement]) => {
+                                const valid = new RegExp(requirement.regex).test(value);
 
                                 return (
                                     <Typography
-                                        key={req.label}
+                                        key={key}
                                         variant="body2"
                                         sx={{
                                             color: valid ? "success.main" : "error.main",
@@ -86,7 +67,7 @@ export default function PasswordField({
                                             gap: 0.5
                                         }}
                                     >
-                                        {valid ? "✓" : "✕"} {req.label}
+                                        {valid ? "✓" : "✕"} {requirement.description}
                                     </Typography>
                                 );
                             })}
@@ -104,7 +85,7 @@ export default function PasswordField({
                                 onClick={() => setShow((prev) => !prev)}
                                 edge="end"
                             >
-                                {show ? <VisibilityOff /> : <Visibility />}
+                                {show ? <VisibilityOff/> : <Visibility/>}
                             </IconButton>
                         </InputAdornment>
                     )

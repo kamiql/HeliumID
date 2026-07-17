@@ -1,11 +1,14 @@
 import {
+    ExpandLess,
+    ExpandMore,
     Logout,
-    Menu
-} from "@mui/icons-material"
+    Menu,
+} from "@mui/icons-material";
 import {
     AppBar,
     Avatar,
     Box,
+    Collapse,
     Divider,
     Drawer,
     IconButton,
@@ -19,38 +22,163 @@ import {
     useMediaQuery,
     useTheme,
     Button,
-} from "@mui/material"
-import {useState} from "react"
-import {Link, Outlet, useLocation, useNavigate} from "react-router"
-import {useAuthStore} from "../../stores/auth.store"
-import {useUser} from "../../hooks/useUser"
-import {DashboardComponents} from "./DashboardComponents.ts"
+} from "@mui/material";
+import {useState} from "react";
+import {Link, Outlet, useLocation, useNavigate} from "react-router";
+import {useAuthStore} from "../../stores/auth.store";
+import {useUser} from "../../hooks/useUser";
+import {DashboardComponents, type DashboardComponent} from "./DashboardComponents.ts";
 import {useConfirm} from "../../hooks/useConfirm.ts";
+import {useUserRoles} from "../../hooks/useUserRoles.ts";
 
-const drawerWidth = 250
+const drawerWidth = 250;
 
 export default function DashboardPage() {
-    const theme = useTheme()
-    const isMobile = useMediaQuery(theme.breakpoints.down("md"))
-    const [mobileOpen, setMobileOpen] = useState(false)
-    const user = useUser()
-    const logout = useAuthStore((state) => state.logout)
-    const navigate = useNavigate()
-    const location = useLocation()
-    const {confirm} = useConfirm()
+    const theme = useTheme();
+    const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+    const [mobileOpen, setMobileOpen] = useState(false);
+    const [expanded, setExpanded] = useState<string[]>([]);
+    const user = useUser();
+    const roles = useUserRoles();
+    const logout = useAuthStore((state) => state.logout);
+    const navigate = useNavigate();
+    const location = useLocation();
+    const {confirm} = useConfirm();
+
+    const permissions = roles.flatMap((role) => role.permissions);
+
+    const hasPermission = (
+        require: string[],
+        all = false
+    ) =>
+        all
+            ? require.every((permission) => permissions.includes(permission))
+            : require.some((permission) => permissions.includes(permission));
+
+    const canAccess = (component: DashboardComponent) =>
+        !component.require ||
+        hasPermission(component.require, component.all);
 
     const handleLogout = async () => {
         const confirmed = await confirm({
             title: "Logout?",
             message: "You will be signed out.",
             confirmText: "Logout",
-        })
+        });
 
-        if (!confirmed) return
+        if (!confirmed) return;
 
-        await logout()
-        navigate("/login")
-    }
+        await logout();
+        navigate("/login");
+    };
+
+    const isSelected = (path: string) =>
+        location.pathname === path;
+
+    const hasActiveChild = (component: DashboardComponent) =>
+        component.children?.some(
+            (child) =>
+                canAccess(child) &&
+                child.path !== undefined &&
+                isSelected(child.path)
+        ) ?? false;
+
+    const toggleExpanded = (name: string) => {
+        setExpanded((current) =>
+            current.includes(name)
+                ? current.filter((item) => item !== name)
+                : [...current, name]
+        );
+    };
+
+    const renderComponent = (
+        component: DashboardComponent,
+        nested = false
+    ): React.ReactNode => {
+        if (!canAccess(component)) return null;
+
+        const Icon = component.icon;
+        const children = component.children?.filter(canAccess);
+        const hasChildren = Boolean(children?.length);
+        const selected = component.path
+            ? isSelected(component.path)
+            : hasActiveChild(component);
+        const isExpanded =
+            expanded.includes(component.name) || hasActiveChild(component);
+
+        if (hasChildren) {
+            return (
+                <Box key={component.name}>
+                    <ListItemButton
+                        selected={selected}
+                        onClick={() => toggleExpanded(component.name)}
+                        sx={{
+                            borderRadius: 2,
+                            mb: 0.5,
+                            pl: nested ? 4 : 2,
+                            "&.Mui-selected": {
+                                backgroundColor: "rgba(88, 101, 242, 0.16)",
+                                color: "primary.light",
+                            },
+                        }}
+                    >
+                        <ListItemIcon
+                            sx={{
+                                minWidth: 40,
+                                color: "inherit",
+                            }}
+                        >
+                            <Icon/>
+                        </ListItemIcon>
+
+                        <ListItemText primary={component.name}/>
+
+                        {isExpanded ? <ExpandLess/> : <ExpandMore/>}
+                    </ListItemButton>
+
+                    <Collapse in={isExpanded} timeout="auto" unmountOnExit>
+                        <List disablePadding>
+                            {children?.map((child) =>
+                                renderComponent(child, true)
+                            )}
+                        </List>
+                    </Collapse>
+                </Box>
+            );
+        }
+
+        if (!component.path) return null;
+
+        return (
+            <ListItemButton
+                key={component.path}
+                component={Link}
+                to={component.path}
+                selected={selected}
+                onClick={() => setMobileOpen(false)}
+                sx={{
+                    borderRadius: 2,
+                    mb: 0.5,
+                    pl: nested ? 4 : 2,
+                    "&.Mui-selected": {
+                        backgroundColor: "rgba(88, 101, 242, 0.16)",
+                        color: "primary.light",
+                    },
+                }}
+            >
+                <ListItemIcon
+                    sx={{
+                        minWidth: 40,
+                        color: "inherit",
+                    }}
+                >
+                    <Icon/>
+                </ListItemIcon>
+
+                <ListItemText primary={component.name}/>
+            </ListItemButton>
+        );
+    };
 
     const drawer = (
         <Box
@@ -60,89 +188,22 @@ export default function DashboardPage() {
                 flexDirection: "column",
             }}
         >
-            {/* Header */}
-            <Box
-                sx={{
-                    px: 3,
-                    py: 3,
-                }}
-            >
-                <Typography
-                    variant="h6"
-                    sx={{
-                        fontWeight: 700,
-                        letterSpacing: "-0.03em",
-                    }}
-                >
+            <Box sx={{px: 3, py: 3}}>
+                <Typography variant="h6" sx={{fontWeight: 700}}>
                     ID Service
                 </Typography>
 
-                <Typography
-                    variant="caption"
-                    sx={{
-                        color: "text.secondary",
-                    }}
-                >
+                <Typography variant="caption" sx={{color: "text.secondary"}}>
                     Identity infrastructure
                 </Typography>
             </Box>
 
             <Divider/>
 
-            <List
-                sx={{
-                    px: 1.5,
-                    py: 2,
-                    flex: 1,
-                }}
-            >
-                {DashboardComponents.map((component) => {
-                    const Icon = component.icon
-
-                    const selected =
-                        component.path === "/"
-                            ? location.pathname === component.path
-                            : location.pathname.startsWith(component.path)
-
-                    return (
-                        <ListItemButton
-                            key={component.path}
-                            component={Link}
-                            to={component.path}
-                            selected={selected}
-                            onClick={() => setMobileOpen(false)}
-                            sx={{
-                                borderRadius: 2,
-                                mb: 0.5,
-                                "&.Mui-selected": {
-                                    backgroundColor:
-                                        "rgba(88, 101, 242, 0.16)",
-                                    color: "primary.light",
-                                },
-                            }}
-                        >
-                            <ListItemIcon
-                                sx={{
-                                    minWidth: 40,
-                                    color: "inherit",
-                                }}
-                            >
-                                <Icon/>
-                            </ListItemIcon>
-
-                            <ListItemText
-                                primary={component.name}
-                                slotProps={{
-                                    primary: {
-                                        sx: {
-                                            fontWeight: 500,
-                                        },
-                                    },
-                                }}
-                            />
-                        </ListItemButton>
-                    )
-                })}
+            <List sx={{px: 1.5, py: 2, flex: 1}}>
+                {DashboardComponents.map((component) =>
+                    renderComponent(component)
+                )}
             </List>
 
             <Box
@@ -154,12 +215,14 @@ export default function DashboardPage() {
                 }}
             >
                 <Stack spacing={1.5}>
-                    <Stack sx={{
-                        display: "flex",
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 1.5,
-                    }}>
+                    <Stack
+                        sx={{
+                            display: "flex",
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 1.5,
+                        }}
+                    >
                         <Avatar
                             sx={{
                                 bgcolor: "primary.main",
@@ -167,19 +230,13 @@ export default function DashboardPage() {
                                 height: 36,
                                 fontSize: "0.9rem",
                                 fontWeight: 600,
-                                "&:hover": {
-                                    scale: "125%"
-                                },
                             }}
                         >
-                            {user.firstName.charAt(0).toUpperCase()}{user.lastName.charAt(0).toUpperCase()}
+                            {user.firstName.charAt(0).toUpperCase()}
+                            {user.lastName.charAt(0).toUpperCase()}
                         </Avatar>
 
-                        <Stack sx={{
-                            display: "flex",
-                            flexDirection: "column",
-                            minWidth: 0,
-                        }}>
+                        <Stack sx={{minWidth: 0}}>
                             <Typography
                                 noWrap
                                 sx={{
@@ -197,7 +254,6 @@ export default function DashboardPage() {
                                 sx={{
                                     color: "text.secondary",
                                     fontSize: "0.7rem",
-                                    display: "block",
                                 }}
                             >
                                 {user.email}
@@ -216,11 +272,6 @@ export default function DashboardPage() {
                             borderRadius: 2,
                             textTransform: "none",
                             fontWeight: 500,
-                            borderColor: "rgba(239, 68, 68, 0.3)",
-                            "&:hover": {
-                                borderColor: "error.main",
-                                backgroundColor: "rgba(239, 68, 68, 0.08)",
-                            },
                         }}
                     >
                         Logout
@@ -228,15 +279,10 @@ export default function DashboardPage() {
                 </Stack>
             </Box>
         </Box>
-    )
+    );
 
     return (
-        <Box
-            sx={{
-                display: "flex",
-                minHeight: "100vh",
-            }}
-        >
+        <Box sx={{display: "flex", minHeight: "100vh"}}>
             <AppBar
                 position="fixed"
                 elevation={0}
@@ -245,10 +291,6 @@ export default function DashboardPage() {
                         xs: "flex",
                         md: "none",
                     },
-                    background: "rgba(11, 15, 25, 0.8)",
-                    backdropFilter: "blur(16px)",
-                    borderBottom: "1px solid",
-                    borderColor: "divider",
                 }}
             >
                 <Toolbar>
@@ -260,12 +302,7 @@ export default function DashboardPage() {
                         <Menu/>
                     </IconButton>
 
-                    <Typography
-                        sx={{
-                            ml: 2,
-                            fontWeight: 700,
-                        }}
-                    >
+                    <Typography sx={{ml: 2, fontWeight: 700}}>
                         ID Service
                     </Typography>
                 </Toolbar>
@@ -323,5 +360,5 @@ export default function DashboardPage() {
                 <Outlet/>
             </Box>
         </Box>
-    )
+    );
 }

@@ -9,11 +9,20 @@ import {
 } from "@mui/material"
 import { Outlet } from "react-router"
 import { useRequestStore } from "../../stores/request.store.ts"
+import ThemeToggle from "./ThemeToggle.tsx";
+import {useRoleStore} from "../../stores/role.store.ts";
+import {useEffect} from "react";
 
 export default function Layout() {
     const activeRequests = useRequestStore(
         (state) => state.activeRequests,
     )
+
+    const initializeRoles = useRoleStore((state) => state.initialize)
+
+    useEffect(() => {
+        void initializeRoles()
+    }, [initializeRoles])
 
     return (
         <Box
@@ -48,6 +57,7 @@ export default function Layout() {
                         >
                             HeliumID
                         </Typography>
+                        <ThemeToggle/>
                     </Toolbar>
                 </Container>
             </AppBar>

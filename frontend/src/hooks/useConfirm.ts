@@ -1,5 +1,5 @@
 import {createContext, useContext} from "react";
-import type {ConfirmOptions} from "../components/Confirm.tsx";
+import type {ConfirmOptions} from "../provider/ConfirmProvider.tsx";
 
 type ConfirmContextType = {
     confirm: (options: ConfirmOptions) => Promise<boolean>

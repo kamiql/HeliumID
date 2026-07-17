@@ -2,7 +2,9 @@ package dev.kamiql.domain.user
 
 import dev.kamiql.domain.auth.Credentials
 import dev.kamiql.domain.auth.OAuthProvider
+import dev.kamiql.domain.security.Role
 import dev.kamiql.storage.CredentialRepository
+import dev.kamiql.storage.RoleRepository
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import java.util.*
@@ -23,9 +25,12 @@ data class User(
 
     val emailVerified: Boolean = false,
 
-    val linkedAccounts: MutableSet<OAuthProvider> = mutableSetOf(),
+    val linkedAccounts: MutableMap<OAuthProvider, Account> = mutableMapOf(),
+
+    val roles: MutableSet<@Contextual UUID> = mutableSetOf(),
 
     val createdAt: Instant = Clock.System.now()
 ) {
     suspend fun credentials(): Credentials = CredentialRepository[id]!!
+    suspend fun roles(): Set<Role> = roles.mapNotNull { RoleRepository[it] }.toSet()
 }
