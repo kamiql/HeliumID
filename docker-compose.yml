@@ -1,0 +1,28 @@
+services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "90:80"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend/dist:/srv:ro
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:8
+    env_file:
+      - .env
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:

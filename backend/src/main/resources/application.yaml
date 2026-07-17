@@ -1,0 +1,11 @@
+ktor:
+  deployment:
+    port: 8080
+  application:
+    modules:
+      - dev.kamiql.KoinKt.koin
+      - dev.kamiql.ContentNegotiationKt.contentNegotiation
+      - dev.kamiql.AuthenticationKt.authentication
+      - dev.kamiql.RoutingKt.routing
+      - dev.kamiql.SessionsKt.sessions
+      - dev.kamiql.CorsKt.cors
