@@ -1,10 +1,11 @@
 :80 {
-    root * /srv
-
     handle_path /api/* {
         reverse_proxy backend:8080
     }
 
-    try_files {path} /index.html
-    file_server
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
 }
