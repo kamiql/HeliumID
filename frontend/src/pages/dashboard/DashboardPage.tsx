@@ -189,7 +189,7 @@ export default function DashboardPage() {
             }}
         >
             <Box sx={{px: 3, py: 3}}>
-                <Typography variant="h5" sx={{fontWeight: 700, fontFamily: "Silkscreen, sans-serif",}}>
+                <Typography variant="h4" sx={{fontFamily: "Silkscreen, sans-serif",}}>
                     HeliumID
                 </Typography>
             </Box>
