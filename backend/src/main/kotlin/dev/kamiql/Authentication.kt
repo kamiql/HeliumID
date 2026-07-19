@@ -1,6 +1,7 @@
 package dev.kamiql
 
 import dev.kamiql.domain.auth.OAuthProvider
+import dev.kamiql.domain.session.UserSession
 import dev.kamiql.domain.user.User
 import io.github.cdimascio.dotenv.Dotenv
 import io.ktor.client.*
@@ -9,6 +10,7 @@ import io.ktor.server.auth.*
 import io.ktor.util.*
 import kotlinx.serialization.Serializable
 import org.koin.ktor.ext.inject
+import java.util.UUID
 
 fun Application.authentication() {
     val dotenv: Dotenv by inject()
@@ -28,6 +30,7 @@ fun Application.authentication() {
 val UserAttributeKey = AttributeKey<User>("UserAttributeKey")
 
 val redirects = mutableMapOf<String, String>()
+val pending = mutableMapOf<UUID, UserSession>()
 
 @Serializable
 enum class PasswordRequirement(val regex: Regex, val description: String) {

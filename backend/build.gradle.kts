@@ -25,6 +25,7 @@ dependencies {
     implementation(ktorLibs.server.cors)
     implementation(ktorLibs.server.netty)
     implementation(ktorLibs.server.sessions)
+    implementation(ktorLibs.server.callLogging)
 
     implementation(ktorLibs.client.cio)
     implementation(ktorLibs.client.contentNegotiation)
@@ -40,4 +41,5 @@ dependencies {
     implementation("org.eclipse.angus:angus-mail:2.0.4")
     implementation("io.github.cdimascio:dotenv-kotlin:6.4.1")
     implementation("at.favre.lib:bcrypt:0.10.2")
+    implementation("dev.samstevens.totp:totp:1.7.1")
 }

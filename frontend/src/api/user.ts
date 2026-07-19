@@ -21,6 +21,7 @@ export type User = {
     lastName: string
     email: string
     emailVerified: boolean
+    totpEnabled: boolean
     linkedAccounts: Record<string, Account>
     roles: string[]
     createdAt: Date
@@ -38,6 +39,15 @@ export type EditUserInformationRequest = {
     email: string
 }
 
+export type TotpSetupResponse = {
+    secret: string
+    qrCode: string
+}
+
+export type TotpRequest = {
+    code: string
+}
+
 export const userApi = {
     verifyEmail: () => api.post("/user/email/verify"),
     changePassword: (request: ChangePasswordRequest) =>
@@ -45,16 +55,13 @@ export const userApi = {
     editPersonalInformation: (request: EditUserInformationRequest) =>
         api.post<string | null>("/user/@me", request),
     removeOauthProvider: (provider: string) => api.post(`/user/oauth2/${provider}/remove`),
+    deleteAccount: () => api.post("/user/delete"),
+    setupTotp: () => api.post<TotpSetupResponse>("/user/totp/setup"),
+    enableTotp: (request: TotpRequest) => api.post("/user/totp/enable", request),
+    disableTotp: (request: TotpRequest) => api.post("/user/totp/disable", request),
 }
 
 export const verificationApi = {
-    status: (id: string) => api.get(`/verification/completed?id=${id}`),
-    verify: (id: string, type: string, secret: string) =>
-        api.post("/verification", {}, {
-            params: {
-                id,
-                type,
-                secret,
-            },
-        }),
+    verify: (id: string, code: string) =>
+        api.post(`/verification?id=${id}&code=${code}`),
 }

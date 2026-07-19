@@ -6,6 +6,7 @@ import dev.kamiql.checkPasswordRequirements
 import dev.kamiql.domain.api.auth.ResetPasswordRequest
 import dev.kamiql.domain.api.user.EditUserInformationRequest
 import dev.kamiql.domain.auth.OAuthProvider
+import dev.kamiql.domain.auth.TotpRequest
 import dev.kamiql.domain.security.Permission
 import dev.kamiql.domain.security.Role
 import dev.kamiql.domain.session.UserSession
@@ -15,16 +16,24 @@ import dev.kamiql.middleware.types.UserMiddleware
 import dev.kamiql.middleware.middleware
 import dev.kamiql.middleware.types.EmailVerificationMiddleware
 import dev.kamiql.services.BCryptService
+import dev.kamiql.services.TotpService
 import dev.kamiql.services.VerificationType
 import dev.kamiql.services.verify
 import dev.kamiql.storage.CredentialRepository
 import dev.kamiql.storage.RoleRepository
 import dev.kamiql.storage.UserRepository
+import dev.samstevens.totp.code.DefaultCodeGenerator
+import dev.samstevens.totp.code.DefaultCodeVerifier
+import dev.samstevens.totp.qr.QrData
+import dev.samstevens.totp.qr.ZxingPngQrGenerator
+import dev.samstevens.totp.secret.DefaultSecretGenerator
+import dev.samstevens.totp.time.SystemTimeProvider
 import io.ktor.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.respond
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
+import io.ktor.util.encodeBase64
 import org.koin.core.component.KoinComponent
 import java.util.UUID
 
@@ -35,13 +44,100 @@ object UserRoutes : Router, KoinComponent {
                 register(UserMiddleware)
             }
 
+            post("/delete") {
+                val user = call.attributes[UserAttributeKey]
+                call.sessions.clear<UserSession>()
+                UserRepository.delete(user.id)
+                CredentialRepository.delete(user.id)
+                call.respond(HttpStatusCode.NoContent)
+            }
+
             route("/email") {
                 post("/verify") {
                     val user = call.attributes[UserAttributeKey]
 
-                    return@post verify(VerificationType.EMAIL) {
+                    return@post verify(VerificationType.EMAIL, user.id) {
                         UserRepository[user.id] = user.copy(emailVerified = true)
                     }
+                }
+            }
+
+            route("/totp") {
+                middleware {
+                    register(EmailVerificationMiddleware)
+                }
+
+                post("/setup") {
+                    val user = call.attributes[UserAttributeKey]
+                    val credentials = user.credentials()
+
+                    if (user.totpEnabled) {
+                        return@post call.respond(HttpStatusCode.Conflict)
+                    }
+
+                    val secret = TotpService.generateSecret()
+
+                    CredentialRepository[user.id] = credentials.copy(
+                        totpSecret = secret
+                    )
+
+                    call.respond(
+                        HttpStatusCode.OK,
+                        mapOf(
+                            "secret" to secret,
+                            "qrCode" to TotpService.generateQrCode(
+                                secret = secret,
+                                label = user.email.value
+                            )
+                        )
+                    )
+                }
+
+                post("/enable") {
+                    val user = call.attributes[UserAttributeKey]
+                    val credentials = user.credentials()
+
+                    val secret = credentials.totpSecret
+                        ?: return@post call.respond(HttpStatusCode.BadRequest)
+
+                    val request = call.receive<TotpRequest>()
+
+                    if (!TotpService.verify(secret, request.code)) {
+                        return@post call.respond(HttpStatusCode.Unauthorized)
+                    }
+
+                    UserRepository[user.id] = user.copy(
+                        totpEnabled = true
+                    )
+
+                    call.respond(HttpStatusCode.OK)
+                }
+
+                post("/disable") {
+                    val user = call.attributes[UserAttributeKey]
+                    val credentials = user.credentials()
+
+                    if (!user.totpEnabled) {
+                        return@post call.respond(HttpStatusCode.Conflict)
+                    }
+
+                    val request = call.receive<TotpRequest>()
+                    val secret = credentials.totpSecret
+                        ?: return@post call.respond(HttpStatusCode.BadRequest)
+
+                    if (!TotpService.verify(secret, request.code)) {
+                        return@post call.respond(HttpStatusCode.Unauthorized)
+                    }
+
+                    CredentialRepository[user.id] = credentials.copy(
+                        totpSecret = null
+                    )
+
+                    UserRepository[user.id] = user.copy(
+                        totpEnabled = false
+                    )
+
+                    call.respond(HttpStatusCode.OK)
                 }
             }
 
@@ -128,7 +224,7 @@ object UserRoutes : Router, KoinComponent {
                     )
 
                     if (req.email != null && req.email != user.email.value) {
-                        return@post verify(VerificationType.EMAIL) {
+                        return@post verify(VerificationType.EMAIL, user.id) {
                             UserRepository[user.id] = new
                         }
                     }

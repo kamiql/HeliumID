@@ -4,13 +4,13 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
-    LinearProgress,
     Stack,
     Typography,
 } from "@mui/material"
-import {useEffect, useState} from "react"
+import {useState} from "react"
 import type {AxiosError} from "axios"
 import {verificationApi} from "../api/user.ts"
+import OtpInput from "./OtpInput.tsx"
 
 type VerificationDialogProps = {
     open: boolean
@@ -29,80 +29,48 @@ export default function VerificationDialog({
                                                onClose,
                                                onCompleted,
                                            }: VerificationDialogProps) {
-    const [remainingSeconds, setRemainingSeconds] = useState(300)
+    const [code, setCode] = useState("")
     const [error, setError] = useState("")
+    const [loading, setLoading] = useState(false)
 
-    useEffect(() => {
-        if (!open || !verificationId) {
+    const handleVerify = async (verificationCode = code) => {
+        if (!verificationId || verificationCode.length !== 6 || loading) {
             return
         }
 
-        let active = true
+        try {
+            setLoading(true)
+            setError("")
 
-        const poll = async () => {
-            while (active) {
-                await new Promise((resolve) => setTimeout(resolve, 2000))
+            await verificationApi.verify(
+                verificationId,
+                verificationCode,
+            )
 
-                if (!active) {
-                    return
-                }
+            onCompleted()
+        } catch (error) {
+            const axiosError = error as AxiosError<VerificationErrorResponse>
 
-                try {
-                    const response = await verificationApi.status(
-                        verificationId,
-                    )
-
-                    if (response.status === 200) {
-                        onCompleted()
-                        return
-                    }
-                } catch (error) {
-                    const axiosError = error as AxiosError<VerificationErrorResponse>
-
-                    if (axiosError.response?.status === 410) {
-                        setError("Verification timed out")
-                        return
-                    }
-
-                    if (axiosError.response?.status === 404) {
-                        setError("Verification not found")
-                        return
-                    }
-
-                    setError("Failed to check verification status")
-                    return
-                }
+            if (axiosError.response?.status === 400) {
+                setError("Invalid or expired verification code")
+            } else {
+                setError(
+                    axiosError.response?.data?.message ||
+                    "Failed to verify code",
+                )
             }
+        } finally {
+            setLoading(false)
         }
+    }
 
-        poll()
+    const handleCodeChange = (value: string) => {
+        setCode(value)
 
-        return () => {
-            active = false
+        if (value.length === 6) {
+            void handleVerify(value)
         }
-    }, [open, verificationId, onCompleted])
-
-    useEffect(() => {
-        if (!open || !verificationId) {
-            return
-        }
-
-        const interval = setInterval(() => {
-            setRemainingSeconds((seconds) => {
-                if (seconds <= 1) {
-                    clearInterval(interval)
-                    return 0
-                }
-
-                return seconds - 1
-            })
-        }, 1000)
-
-        return () => clearInterval(interval)
-    }, [open, verificationId])
-
-    const minutes = Math.floor(remainingSeconds / 60)
-    const seconds = remainingSeconds % 60
+    }
 
     return (
         <Dialog
@@ -120,24 +88,13 @@ export default function VerificationDialog({
                             color: "text.secondary",
                         }}
                     >
-                        Check your inbox and follow the verification link in
-                        the email.
+                        Enter the 6-digit code.
                     </Typography>
 
-                    <Typography
-                        variant="h4"
-                        align="center"
-                        sx={{
-                            fontVariantNumeric: "tabular-nums",
-                            fontWeight: 700,
-                        }}
-                    >
-                        {minutes}:{seconds.toString().padStart(2, "0")}
-                    </Typography>
-
-                    <LinearProgress
-                        variant="determinate"
-                        value={(remainingSeconds / 300) * 100}
+                    <OtpInput
+                        value={code}
+                        onChange={handleCodeChange}
+                        autoFocus
                     />
 
                     {error && (
@@ -152,8 +109,22 @@ export default function VerificationDialog({
             </DialogContent>
 
             <DialogActions>
-                <Button onClick={onClose}>
+                <Button
+                    onClick={onClose}
+                    disabled={loading}
+                >
                     Close
+                </Button>
+
+                <Button
+                    variant="contained"
+                    onClick={() => void handleVerify()}
+                    disabled={
+                        loading ||
+                        code.length !== 6
+                    }
+                >
+                    Verify
                 </Button>
             </DialogActions>
         </Dialog>

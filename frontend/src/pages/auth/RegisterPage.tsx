@@ -13,9 +13,11 @@ import EmailField from "../../components/EmailField.tsx"
 import PasswordField from "../../components/PasswordField.tsx"
 import {useAuth} from "../../hooks/useAuth.ts";
 import axios from "axios";
+import {useNavigate} from "react-router";
 
 export default function RegisterPage() {
-    const { register, login, loading } = useAuth()
+    const { register, loading } = useAuth()
+    const navigate = useNavigate()
 
     const [step, setStep] = useState(1)
     const [error, setError] = useState("")
@@ -43,11 +45,8 @@ export default function RegisterPage() {
                 lastName,
                 email,
                 password,
-            }).then(async () => {
-                await login({
-                    email,
-                    password
-                })
+            }).then(() => {
+                navigate("/")
             })
         } catch (error) {
             if (axios.isAxiosError(error) && error.response?.status === 409) {

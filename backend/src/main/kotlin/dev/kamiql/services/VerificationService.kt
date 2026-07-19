@@ -1,12 +1,12 @@
 package dev.kamiql.services
 
-import dev.kamiql.domain.session.UserSession
 import dev.kamiql.domain.user.User
 import dev.kamiql.storage.UserRepository
 import io.ktor.http.*
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import io.ktor.server.sessions.*
+import kotlinx.serialization.Serializable
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import java.security.SecureRandom
@@ -16,37 +16,58 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
+@Serializable
 enum class VerificationType : KoinComponent {
     EMAIL {
+        private val codes = ConcurrentHashMap<UUID, String>()
+
         override suspend fun create(
             user: User,
             id: UUID
         ) {
-            val secret = generateSecret()
+            val code = generateCode()
 
-            secrets[id] = secret
+            codes[id] = code
 
             mailService.send(
                 user = user,
                 subject = "Confirm action",
                 template = "confirm-action",
                 variables = mapOf(
-                    "secret" to secret,
-                    "id" to id
+                    "code" to code
                 )
             )
         }
 
         override suspend fun verify(
+            user: User,
             id: UUID,
-            secret: String
+            code: String
         ): Boolean {
-            return secrets.remove(id) == secret
+            return codes.remove(id) == code
         }
 
         override fun cleanup(id: UUID) {
-            secrets.remove(id)
+            codes.remove(id)
         }
+    },
+    TOTP {
+        override suspend fun create(
+            user: User,
+            id: UUID
+        ) {}
+
+        override suspend fun verify(
+            user: User,
+            id: UUID,
+            code: String
+        ): Boolean {
+            if (!user.totpEnabled) return false
+            val totpSecret = user.credentials().totpSecret ?: return false
+            return TotpService.verify(totpSecret, code)
+        }
+
+        override fun cleanup(id: UUID) {}
     };
 
     val mailService: MailService by inject()
@@ -57,55 +78,40 @@ enum class VerificationType : KoinComponent {
     )
 
     abstract suspend fun verify(
+        user: User,
         id: UUID,
-        secret: String
+        code: String
     ): Boolean
 
     abstract fun cleanup(id: UUID)
 
     companion object {
         private val random = SecureRandom()
-        private val secrets = ConcurrentHashMap<UUID, String>()
 
-        private fun generateSecret(): String {
-            val bytes = ByteArray(32)
-
-            random.nextBytes(bytes)
-
-            return bytes.joinToString("") {
-                "%02x".format(it)
-            }
+        private fun generateCode(): String {
+            return random.nextInt(100000, 1000000).toString()
         }
     }
-}
-
-enum class VerificationStatus {
-    PENDING,
-    COMPLETED,
-    EXPIRED,
-    NOT_FOUND
 }
 
 object VerificationManager {
 
     private val verifications = ConcurrentHashMap<UUID, Verification>()
-    private val completed = ConcurrentHashMap.newKeySet<UUID>()
 
     suspend fun create(
         user: User,
         type: VerificationType,
-        callback: suspend () -> Unit
+        callback: suspend (ApplicationCall) -> Unit
     ): UUID {
         val id = UUID.randomUUID()
 
-        val verification = Verification(
+        verifications[id] = Verification(
             id = id,
+            user = user,
             type = type,
             expiresAt = Clock.System.now() + 5.minutes,
             callback = callback
         )
-
-        verifications[id] = verification
 
         type.create(
             user = user,
@@ -116,70 +122,49 @@ object VerificationManager {
     }
 
     suspend fun confirm(
+        call: ApplicationCall,
         id: UUID,
-        type: VerificationType,
-        secret: String
+        code: String
     ): Boolean {
         val verification = verifications[id]
             ?: return false
 
-        if (verification.type != type) {
-            return false
-        }
-
         if (verification.expiresAt <= Clock.System.now()) {
             verifications.remove(id)
             verification.type.cleanup(id)
-
             return false
         }
 
-        if (!verification.type.verify(id, secret)) {
+        if (!verification.type.verify(
+                user = verification.user,
+                id = id,
+                code = code
+            )
+        ) {
             return false
         }
 
         verifications.remove(id)
-        completed.add(id)
-
-        verification.callback()
+        verification.callback(call)
 
         return true
     }
 
-    fun status(id: UUID): VerificationStatus {
-        if (completed.contains(id)) {
-            return VerificationStatus.COMPLETED
-        }
-
-        val verification = verifications[id]
-            ?: return VerificationStatus.NOT_FOUND
-
-        if (verification.expiresAt <= Clock.System.now()) {
-            verifications.remove(id)
-            verification.type.cleanup(id)
-
-            return VerificationStatus.EXPIRED
-        }
-
-        return VerificationStatus.PENDING
-    }
-
     private data class Verification(
         val id: UUID,
+        val user: User,
         val type: VerificationType,
         val expiresAt: Instant,
-        val callback: suspend () -> Unit
+        val callback: suspend (ApplicationCall) -> Unit
     )
 }
 
 suspend fun RoutingContext.verify(
     type: VerificationType,
-    callback: suspend () -> Unit
+    userId: UUID,
+    callback: suspend (ApplicationCall) -> Unit
 ) {
-    val session = call.sessions.get<UserSession>()
-        ?: return call.respond(HttpStatusCode.Unauthorized)
-
-    val user = UserRepository[session.userId]
+    val user = UserRepository[userId]
         ?: return call.respond(HttpStatusCode.NotFound)
 
     val id = VerificationManager.create(

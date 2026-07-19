@@ -1,37 +1,63 @@
 package dev.kamiql.routes
 
 import dev.kamiql.Router
+import dev.kamiql.domain.api.auth.MFARequest
+import dev.kamiql.domain.session.MFASession
+import dev.kamiql.pending
 import dev.kamiql.services.VerificationManager
-import dev.kamiql.services.VerificationStatus
 import dev.kamiql.services.VerificationType
+import dev.kamiql.storage.UserRepository
 import io.ktor.http.*
+import io.ktor.server.request.receive
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.server.sessions.sessions
+import io.ktor.server.sessions.set
 import java.util.*
 
 object VerificationRoutes : Router {
     override fun Routing.routes() {
         route("/verification") {
+
+            post("/create") {
+                val req = call.receive<MFARequest>()
+
+                val user = UserRepository[req.userId] ?: return@post call.respond(HttpStatusCode.BadRequest)
+
+                val id = VerificationManager.create(
+                    user,
+                    req.type
+                ) { call ->
+                    pending.remove(user.id)?.let { pending ->
+                        call.sessions.set(pending)
+                    }
+
+                    call.sessions.set(MFASession(
+                        req.userId,
+                        UUID.randomUUID(),
+                        req.type
+                    ))
+                }
+
+                call.respond(HttpStatusCode.OK, id)
+            }
+
             post {
                 val id = call.queryParameters["id"]
-                    ?.let(UUID::fromString)
+                    ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@post call.respond(HttpStatusCode.BadRequest)
 
-                val type = call.queryParameters["type"]
-                    ?.let {
-                        runCatching {
-                            VerificationType.valueOf(it.uppercase())
-                        }.getOrNull()
-                    }
+                val code = call.queryParameters["code"]
                     ?: return@post call.respond(HttpStatusCode.BadRequest)
 
-                val secret = call.queryParameters["secret"]
-                    ?: return@post call.respond(HttpStatusCode.BadRequest)
+                if (!code.matches(Regex("\\d{6}"))) {
+                    return@post call.respond(HttpStatusCode.BadRequest)
+                }
 
                 val confirmed = VerificationManager.confirm(
+                    call = call,
                     id = id,
-                    type = type,
-                    secret = secret
+                    code = code
                 )
 
                 if (!confirmed) {
@@ -39,26 +65,6 @@ object VerificationRoutes : Router {
                 }
 
                 call.respond(HttpStatusCode.OK)
-            }
-
-            get("/completed") {
-                val id = call.queryParameters["id"]
-                    ?.let(UUID::fromString)
-                    ?: return@get call.respond(HttpStatusCode.BadRequest)
-
-                when (VerificationManager.status(id)) {
-                    VerificationStatus.PENDING ->
-                        call.respond(HttpStatusCode.Accepted)
-
-                    VerificationStatus.COMPLETED ->
-                        call.respond(HttpStatusCode.OK)
-
-                    VerificationStatus.EXPIRED ->
-                        call.respond(HttpStatusCode.Gone)
-
-                    VerificationStatus.NOT_FOUND ->
-                        call.respond(HttpStatusCode.NotFound)
-                }
             }
         }
     }

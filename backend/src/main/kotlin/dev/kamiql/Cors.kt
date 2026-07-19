@@ -11,8 +11,19 @@ fun Application.cors() {
 
     install(CORS) {
         allowHost("localhost:5173")
-        allowHost(dotenv["HOST_URL"].substringAfter("://"), listOf("https"))
-        allowHeader(HttpHeaders.ContentType)
+        allowHost("127.0.0.1:5173")
+
+        allowHost(
+            dotenv["HOST_URL"].substringAfter("://"),
+            listOf("http", "https")
+        )
+
+        allowNonSimpleContentTypes = true
         allowCredentials = true
+
+        allowHeader(HttpHeaders.ContentType)
+        allowHeader(HttpHeaders.Authorization)
+
+        HttpMethod.DefaultMethods.forEach(::allowMethod)
     }
 }

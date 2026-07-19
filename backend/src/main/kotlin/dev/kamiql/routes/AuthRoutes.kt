@@ -4,6 +4,7 @@ import dev.kamiql.Router
 import dev.kamiql.checkPasswordRequirements
 import dev.kamiql.domain.api.auth.CreateUserRequest
 import dev.kamiql.domain.api.auth.LoginUserRequest
+import dev.kamiql.domain.api.auth.RequireMFAResponse
 import dev.kamiql.domain.auth.Credentials
 import dev.kamiql.domain.auth.OAuthData
 import dev.kamiql.domain.auth.OAuthProvider
@@ -11,8 +12,7 @@ import dev.kamiql.domain.session.UserSession
 import dev.kamiql.domain.user.Account
 import dev.kamiql.domain.user.Email
 import dev.kamiql.domain.user.User
-import dev.kamiql.middleware.middleware
-import dev.kamiql.middleware.types.EmailVerificationMiddleware
+import dev.kamiql.pending
 import dev.kamiql.redirects
 import dev.kamiql.services.BCryptService
 import dev.kamiql.storage.CredentialRepository
@@ -85,6 +85,21 @@ object AuthRoutes : Router {
                     return@post call.respond(
                         HttpStatusCode.Unauthorized,
                         "Invalid credentials"
+                    )
+                }
+
+                if (user.requireMFA()) {
+                    pending[user.id] = UserSession(
+                        UUID.randomUUID(),
+                        user.id
+                    )
+
+                    return@post call.respond(
+                        HttpStatusCode.Accepted,
+                        RequireMFAResponse(
+                            user.id,
+                            user.mfaMethods()
+                        )
                     )
                 }
 

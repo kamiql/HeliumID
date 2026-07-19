@@ -14,6 +14,11 @@ export type RegisterRequest = {
     password: string
 }
 
+export type MFARequest = {
+    userId: string
+    type: string
+}
+
 export const authApi = {
     me: () => api.get<User>("/user/@me"),
     login: (request: LoginRequest) => api.post("/auth/login", request),
@@ -21,5 +26,6 @@ export const authApi = {
     logout: () => api.post("/auth/logout"),
     oauth: (provider: string, redirect: string | null = null) => {
         window.location.assign(`/api/auth/oauth2/${provider}/login?redirectUrl=${redirect ? redirect : window.location.pathname}`);
-    }
+    },
+    mfa: (request: MFARequest) => api.post<string>("/verification/create", request)
 }

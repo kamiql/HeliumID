@@ -3,6 +3,7 @@ package dev.kamiql.domain.user
 import dev.kamiql.domain.auth.Credentials
 import dev.kamiql.domain.auth.OAuthProvider
 import dev.kamiql.domain.security.Role
+import dev.kamiql.services.VerificationType
 import dev.kamiql.storage.CredentialRepository
 import dev.kamiql.storage.RoleRepository
 import kotlinx.serialization.Contextual
@@ -24,6 +25,7 @@ data class User(
     val email: Email,
 
     val emailVerified: Boolean = false,
+    val totpEnabled: Boolean = false,
 
     val linkedAccounts: MutableMap<OAuthProvider, Account> = mutableMapOf(),
 
@@ -33,4 +35,14 @@ data class User(
 ) {
     suspend fun credentials(): Credentials = CredentialRepository[id]!!
     suspend fun roles(): Set<Role> = roles.mapNotNull { RoleRepository[it] }.toSet()
+
+    fun requireMFA(): Boolean = emailVerified || totpEnabled
+    fun mfaMethods(): List<VerificationType> {
+        val types = mutableListOf<VerificationType>()
+
+        if (emailVerified) types.add(VerificationType.EMAIL)
+        if (totpEnabled) types.add(VerificationType.TOTP)
+
+        return types
+    }
 }

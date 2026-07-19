@@ -6,7 +6,8 @@ import kotlinx.serialization.Serializable
 import java.util.*
 
 @Serializable
-data class VerificationSession(
+data class MFASession(
+    val userId: @Contextual UUID,
     val id: @Contextual UUID,
     val type: VerificationType
 )

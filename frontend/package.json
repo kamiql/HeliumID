@@ -16,6 +16,7 @@
     "@mui/material": "^9.2.0",
     "axios": "^1.18.1",
     "i18next": "^26.3.6",
+    "mui-one-time-password-input": "^7.0.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.9",

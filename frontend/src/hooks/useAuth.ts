@@ -7,6 +7,7 @@ export function useAuth() {
             initialized: state.initialized,
             loading: state.loading,
             login: state.login,
+            completeLogin: state.completeLogin,
             register: state.register,
             logout: state.logout,
         }))

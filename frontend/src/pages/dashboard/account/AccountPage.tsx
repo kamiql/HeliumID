@@ -15,7 +15,7 @@ import {
     Typography,
 } from "@mui/material"
 import CheckCircleIcon from "@mui/icons-material/CheckCircle"
-import {useCallback, useState} from "react"
+import {useState} from "react"
 import {useAuthStore} from "../../../stores/auth.store.ts"
 import {useUser} from "../../../hooks/useUser.ts"
 import {userApi} from "../../../api/user.ts"
@@ -24,12 +24,13 @@ import PasswordField from "../../../components/PasswordField.tsx"
 import axios from "axios"
 import {DiscordIcon, GoogleIcon} from "../../../components/global/Icons.tsx"
 import {authApi} from "../../../api/auth.ts"
-import {useConfirm} from "../../../hooks/useConfirm.ts";
-import EmailField from "../../../components/EmailField.tsx";
+import {useConfirm} from "../../../hooks/useConfirm.ts"
+import EmailField from "../../../components/EmailField.tsx"
+import OtpInput from "../../../components/OtpInput.tsx"
 
 const PROVIDERS = [
     {id: "google", name: "Google", icon: GoogleIcon},
-    {id: "discord", name: "Discord", icon: DiscordIcon}
+    {id: "discord", name: "Discord", icon: DiscordIcon},
 ] as const
 
 export default function AccountPage() {
@@ -58,11 +59,20 @@ export default function AccountPage() {
     const [lastName, setLastName] = useState("")
     const [email, setEmail] = useState("")
 
+    const [totpOpen, setTotpOpen] = useState(false)
+    const [totpLoading, setTotpLoading] = useState(false)
+    const [totpError, setTotpError] = useState("")
+    const [totpQrCode, setTotpQrCode] = useState("")
+    const [totpCode, setTotpCode] = useState("")
+
+    const [totpDisableOpen, setTotpDisableOpen] = useState(false)
+    const [totpDisableCode, setTotpDisableCode] = useState("")
+
     const handleRemoveOAuthProvider = async (provider: string) => {
         const confirmed = await confirm({
             title: "Remove?",
             message: "This cannot be undone.",
-            confirmText: "Remove"
+            confirmText: "Remove",
         })
 
         if (!confirmed) return
@@ -71,13 +81,26 @@ export default function AccountPage() {
         await initialize()
     }
 
-    const handleVerificationCompleted = useCallback(async () => {
+    const handleDeleteAccount = async () => {
+        const confirmed = await confirm({
+            title: "Delete account?",
+            message: "This permanently deletes your account and cannot be undone.",
+            confirmText: "Delete account",
+        })
+
+        if (!confirmed) return
+
+        await userApi.deleteAccount()
+        await initialize()
+    }
+
+    const handleVerificationCompleted = async () => {
         await initialize()
 
         setVerificationOpen(false)
         setVerificationId(null)
         setVerificationLoading(false)
-    }, [initialize])
+    }
 
     const handleVerifyEmail = async () => {
         setVerificationLoading(true)
@@ -147,7 +170,7 @@ export default function AccountPage() {
                 setPasswordError(
                     error.response?.data?.message ||
                     error.response?.data ||
-                    "Failed to change password"
+                    "Failed to change password",
                 )
                 return
             }
@@ -214,7 +237,106 @@ export default function AccountPage() {
         }
     }
 
-    const linkedAccounts = user.linkedAccounts
+    const handleSetupTotp = async () => {
+        try {
+            setTotpLoading(true)
+            setTotpError("")
+
+            const response = await userApi.setupTotp()
+
+            setTotpQrCode(response.data.qrCode)
+            setTotpCode("")
+            setTotpOpen(true)
+        } catch {
+            setTotpError("Failed to setup two-factor authentication")
+        } finally {
+            setTotpLoading(false)
+        }
+    }
+
+    const handleEnableTotp = async (code = totpCode) => {
+        if (code.length !== 6 || totpLoading) {
+            return
+        }
+
+        try {
+            setTotpLoading(true)
+            setTotpError("")
+
+            await userApi.enableTotp({
+                code,
+            })
+
+            setTotpOpen(false)
+            setTotpCode("")
+            setTotpQrCode("")
+
+            await initialize()
+        } catch (error) {
+            if (
+                axios.isAxiosError(error) &&
+                error.response?.status === 401
+            ) {
+                setTotpError("Invalid authentication code")
+                return
+            }
+
+            setTotpError("Failed to enable two-factor authentication")
+        } finally {
+            setTotpLoading(false)
+        }
+    }
+
+    const handleDisableTotp = async (code = totpDisableCode) => {
+        if (code.length !== 6 || totpLoading) {
+            return
+        }
+
+        try {
+            setTotpLoading(true)
+            setTotpError("")
+
+            await userApi.disableTotp({
+                code,
+            })
+
+            setTotpDisableOpen(false)
+            setTotpDisableCode("")
+
+            await initialize()
+        } catch (error) {
+            if (
+                axios.isAxiosError(error) &&
+                error.response?.status === 401
+            ) {
+                setTotpError("Invalid authentication code")
+                return
+            }
+
+            setTotpError("Failed to disable two-factor authentication")
+        } finally {
+            setTotpLoading(false)
+        }
+    }
+
+    const handleCloseTotp = () => {
+        if (totpLoading) return
+
+        setTotpOpen(false)
+        setTotpError("")
+        setTotpCode("")
+        setTotpQrCode("")
+    }
+
+    const handleCloseDisableTotp = () => {
+        if (totpLoading) return
+
+        setTotpDisableOpen(false)
+        setTotpDisableCode("")
+        setTotpError("")
+    }
+
+    const linkedAccounts = user?.linkedAccounts ?? {}
 
     return (
         <>
@@ -228,7 +350,7 @@ export default function AccountPage() {
                     <Alert
                         severity="warning"
                         sx={{
-                            mb: 2
+                            mb: 2,
                         }}
                     >
                         Your email is not verified yet, some actions may not be available
@@ -399,8 +521,7 @@ export default function AccountPage() {
                                             color: "text.secondary",
                                         }}
                                     >
-                                        Change the password used to access your
-                                        identity.
+                                        Change the password used to access your identity.
                                     </Typography>
                                 </Box>
 
@@ -442,8 +563,7 @@ export default function AccountPage() {
                                             color: "text.secondary",
                                         }}
                                     >
-                                        Verify your email address to secure your
-                                        account.
+                                        Verify your email address to secure your account.
                                     </Typography>
                                 </Box>
 
@@ -585,7 +705,7 @@ export default function AccountPage() {
                                                             color="error"
                                                             onClick={() =>
                                                                 handleRemoveOAuthProvider(
-                                                                    provider.id
+                                                                    provider.id,
                                                                 )
                                                             }
                                                         >
@@ -607,6 +727,148 @@ export default function AccountPage() {
                                         )
                                     })}
                                 </Stack>
+                            </Stack>
+                        </CardContent>
+                    </Card>
+
+                    <Card
+                        sx={{
+                            flex: "1 1 100%",
+                        }}
+                    >
+                        <CardContent>
+                            <Stack spacing={3}>
+                                <Box>
+                                    <Typography
+                                        variant="h6"
+                                        sx={{
+                                            fontWeight: 600,
+                                        }}
+                                    >
+                                        Two-factor authentication
+                                    </Typography>
+
+                                    <Typography
+                                        variant="body2"
+                                        sx={{
+                                            mt: 0.5,
+                                            color: "text.secondary",
+                                        }}
+                                    >
+                                        Protect your account with an authenticator app.
+                                    </Typography>
+                                </Box>
+
+                                <Divider/>
+
+                                <Chip
+                                    label={
+                                        user.totpEnabled
+                                            ? "Enabled"
+                                            : "Not enabled"
+                                    }
+                                    color={
+                                        user.totpEnabled
+                                            ? "success"
+                                            : "warning"
+                                    }
+                                    variant="outlined"
+                                    sx={{
+                                        width: "fit-content",
+                                    }}
+                                />
+
+                                {user.totpEnabled ? (
+                                    <Button
+                                        variant="outlined"
+                                        color="error"
+                                        onClick={() => {
+                                            setTotpError("")
+                                            setTotpDisableCode("")
+                                            setTotpDisableOpen(true)
+                                        }}
+                                    >
+                                        Disable two-factor authentication
+                                    </Button>
+                                ) : (
+                                    <Button
+                                        variant="outlined"
+                                        onClick={handleSetupTotp}
+                                        disabled={
+                                            totpLoading ||
+                                            !user.emailVerified
+                                        }
+                                    >
+                                        Setup two-factor authentication
+                                    </Button>
+                                )}
+
+                                {!user.emailVerified && (
+                                    <Typography
+                                        variant="body2"
+                                        color="text.secondary"
+                                    >
+                                        Verify your email address before enabling two-factor authentication.
+                                    </Typography>
+                                )}
+                            </Stack>
+                        </CardContent>
+                    </Card>
+
+                    <Card
+                        sx={{
+                            flex: "1 1 100%",
+                            border: "1px solid",
+                            borderColor: "error.main",
+                        }}
+                    >
+                        <CardContent>
+                            <Stack spacing={3}>
+                                <Box>
+                                    <Typography
+                                        variant="h6"
+                                        sx={{
+                                            fontWeight: 600,
+                                            color: "error.main",
+                                        }}
+                                    >
+                                        Danger Zone
+                                    </Typography>
+
+                                    <Typography
+                                        variant="body2"
+                                        sx={{
+                                            mt: 0.5,
+                                            color: "text.secondary",
+                                        }}
+                                    >
+                                        Permanently delete your account and all associated data.
+                                    </Typography>
+                                </Box>
+
+                                <Divider/>
+
+                                <Box
+                                    sx={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        gap: 2,
+                                        flexWrap: "wrap",
+                                    }}
+                                >
+                                    <Typography variant="body2">
+                                        This action cannot be undone.
+                                    </Typography>
+
+                                    <Button
+                                        variant="contained"
+                                        color="error"
+                                        onClick={handleDeleteAccount}
+                                    >
+                                        Delete account
+                                    </Button>
+                                </Box>
                             </Stack>
                         </CardContent>
                     </Card>
@@ -667,13 +929,12 @@ export default function AccountPage() {
                             fullWidth
                             label="Email"
                             value={email}
-                            onType={text => setEmail(text)}
+                            onType={(text) => setEmail(text)}
                         />
 
                         {email !== user.email && (
                             <Alert severity="warning">
-                                Changing your email address requires email
-                                verification.
+                                Changing your email address requires email verification.
                             </Alert>
                         )}
 
@@ -794,8 +1055,139 @@ export default function AccountPage() {
                 </DialogActions>
             </Dialog>
 
+            <Dialog
+                open={totpOpen}
+                onClose={handleCloseTotp}
+                fullWidth
+                maxWidth="xs"
+            >
+                <DialogTitle>Setup two-factor authentication</DialogTitle>
+
+                <DialogContent>
+                    <Stack spacing={2}>
+                        <Typography variant="body2">
+                            Scan this QR code with your authenticator app and enter the generated code.
+                        </Typography>
+
+                        {totpQrCode && (
+                            <Box
+                                component="img"
+                                src={totpQrCode}
+                                alt="TOTP QR code"
+                                sx={{
+                                    width: 220,
+                                    height: 220,
+                                    mx: "auto",
+                                }}
+                            />
+                        )}
+
+                        <OtpInput
+                            value={totpCode}
+                            onChange={(value) => {
+                                setTotpCode(value)
+                                setTotpError("")
+
+                                if (value.length === 6) {
+                                    void handleEnableTotp(value)
+                                }
+                            }}
+                            autoFocus
+                        />
+
+                        {totpError && (
+                            <Typography
+                                color="error"
+                                variant="body2"
+                            >
+                                {totpError}
+                            </Typography>
+                        )}
+                    </Stack>
+                </DialogContent>
+
+                <DialogActions>
+                    <Button
+                        onClick={handleCloseTotp}
+                        disabled={totpLoading}
+                    >
+                        Cancel
+                    </Button>
+
+                    <Button
+                        variant="contained"
+                        onClick={() => void handleEnableTotp()}
+                        disabled={
+                            totpLoading ||
+                            totpCode.length !== 6
+                        }
+                    >
+                        Enable
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog
+                open={totpDisableOpen}
+                onClose={handleCloseDisableTotp}
+                fullWidth
+                maxWidth="xs"
+            >
+                <DialogTitle>Disable two-factor authentication</DialogTitle>
+
+                <DialogContent>
+                    <Stack spacing={2}>
+                        <Alert severity="warning">
+                            Enter your current authenticator code to disable two-factor authentication.
+                        </Alert>
+
+                        <OtpInput
+                            value={totpDisableCode}
+                            onChange={(value) => {
+                                setTotpDisableCode(value)
+                                setTotpError("")
+
+                                if (value.length === 6) {
+                                    void handleDisableTotp(value)
+                                }
+                            }}
+                            autoFocus
+                        />
+
+                        {totpError && (
+                            <Typography
+                                color="error"
+                                variant="body2"
+                            >
+                                {totpError}
+                            </Typography>
+                        )}
+                    </Stack>
+                </DialogContent>
+
+                <DialogActions>
+                    <Button
+                        onClick={handleCloseDisableTotp}
+                        disabled={totpLoading}
+                    >
+                        Cancel
+                    </Button>
+
+                    <Button
+                        variant="contained"
+                        color="error"
+                        onClick={() => void handleDisableTotp()}
+                        disabled={
+                            totpLoading ||
+                            totpDisableCode.length !== 6
+                        }
+                    >
+                        Disable
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
             <VerificationDialog
-                key={verificationId}
                 open={verificationOpen}
                 verificationId={verificationId}
                 onClose={handleCloseVerification}
