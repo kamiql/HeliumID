@@ -27,4 +27,6 @@ fun Application.routing() {
             }
         }
     }
+    
+    install(CallLogging)
 }
