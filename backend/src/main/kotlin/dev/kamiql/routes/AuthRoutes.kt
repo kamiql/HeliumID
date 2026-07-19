@@ -47,9 +47,12 @@ object AuthRoutes : Router {
                     )
                 }
 
-                req.password.checkPasswordRequirements().filter { !it.value }.takeIf { it.isNotEmpty() }?.let {
-                    return@post call.respond(HttpStatusCode.Conflict, it)
-                }
+                req.password.checkPasswordRequirements()
+                    .filter { !it.value }
+                    .takeIf { it.isNotEmpty() }
+                    ?.let {
+                        return@post call.respond(HttpStatusCode.Conflict, it)
+                    }
 
                 val user = User(
                     UUID.randomUUID(),
@@ -125,7 +128,7 @@ object AuthRoutes : Router {
                     register(EmailVerificationMiddleware)
                 }
 
-                OAuthProvider.entries.toList().forEach { provider ->
+                OAuthProvider.entries.forEach { provider ->
                     route(provider.name.lowercase()) {
                         authenticate("${provider.name.lowercase()}-oauth") {
                             get("/login") {}
@@ -133,14 +136,21 @@ object AuthRoutes : Router {
                             get("/callback") {
                                 call.principal<OAuthAccessTokenResponse.OAuth2>()?.let { principal ->
                                     val state = principal.state ?: return@let
-
                                     val userInfo = provider.userInfo(principal.accessToken)
+                                    val linkedUserId = CredentialRepository.findUserByOAuth(
+                                        provider,
+                                        userInfo.id
+                                    )
 
                                     call.sessions.get<UserSession>()?.let session@{ session ->
-                                        if (CredentialRepository.findUserByOAuth(
-                                            provider,
-                                            userInfo.id
-                                        )?.let { UserRepository[it] }?.id == session.userId) {
+                                        if (linkedUserId != null && linkedUserId != session.userId) {
+                                            redirects.remove(state)
+                                            return@get call.respondRedirect(
+                                                "/account?error=oauth+account+already+linked"
+                                            )
+                                        }
+
+                                        if (linkedUserId == session.userId) {
                                             redirects.remove(state)?.let { redirect ->
                                                 call.respondRedirect(redirect)
                                             }
@@ -150,22 +160,22 @@ object AuthRoutes : Router {
                                         val user = UserRepository[session.userId] ?: return@session
                                         val credentials = user.credentials()
 
-                                        CredentialRepository[user.id] = credentials.apply {
-                                            accounts[provider] = OAuthData(
-                                                provider,
-                                                userInfo.id,
-                                                principal.accessToken,
-                                                principal.refreshToken,
-                                            )
-                                        }
+                                        credentials.accounts[provider] = OAuthData(
+                                            provider,
+                                            userInfo.id,
+                                            principal.accessToken,
+                                            principal.refreshToken,
+                                        )
 
-                                        UserRepository[user.id] = user.apply {
-                                            linkedAccounts[provider] = Account(
-                                                userInfo.id,
-                                                userInfo.email,
-                                                userInfo.username,
-                                            )
-                                        }
+                                        CredentialRepository[user.id] = credentials
+
+                                        user.linkedAccounts[provider] = Account(
+                                            userInfo.id,
+                                            userInfo.email,
+                                            userInfo.username,
+                                        )
+
+                                        UserRepository[user.id] = user
 
                                         redirects.remove(state)?.let { redirect ->
                                             call.respondRedirect(redirect)
@@ -175,18 +185,17 @@ object AuthRoutes : Router {
                                         return@let
                                     }
 
-                                    val uuid = CredentialRepository.findUserByOAuth(
-                                        provider,
-                                        userInfo.id
-                                    ) ?: run {
+                                    val uuid = linkedUserId ?: run {
                                         redirects.remove(state)
                                         return@get call.respondRedirect("/login?error=account+not+linked")
                                     }
 
-                                    call.sessions.set(UserSession(
-                                        UUID.randomUUID(),
-                                        uuid
-                                    ))
+                                    call.sessions.set(
+                                        UserSession(
+                                            UUID.randomUUID(),
+                                            uuid
+                                        )
+                                    )
 
                                     redirects.remove(state)?.let { redirect ->
                                         call.respondRedirect(redirect)
