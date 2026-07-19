@@ -340,6 +340,7 @@ export default function DashboardPage() {
                 component="main"
                 sx={{
                     flexGrow: 1,
+                    width: 0,
                     minWidth: 0,
                     pt: {
                         xs: 10,
