@@ -25,13 +25,9 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.*
 
 object AuthRoutes : Router {
-    private val oauthLinkMutex = Mutex()
-
     override fun Routing.routes() {
         route("/auth") {
             post("/register") {
@@ -51,12 +47,9 @@ object AuthRoutes : Router {
                     )
                 }
 
-                req.password.checkPasswordRequirements()
-                    .filter { !it.value }
-                    .takeIf { it.isNotEmpty() }
-                    ?.let {
-                        return@post call.respond(HttpStatusCode.Conflict, it)
-                    }
+                req.password.checkPasswordRequirements().filter { !it.value }.takeIf { it.isNotEmpty() }?.let {
+                    return@post call.respond(HttpStatusCode.Conflict, it)
+                }
 
                 val user = User(
                     UUID.randomUUID(),
@@ -132,7 +125,7 @@ object AuthRoutes : Router {
                     register(EmailVerificationMiddleware)
                 }
 
-                OAuthProvider.entries.forEach { provider ->
+                OAuthProvider.entries.toList().forEach { provider ->
                     route(provider.name.lowercase()) {
                         authenticate("${provider.name.lowercase()}-oauth") {
                             get("/login") {}
@@ -140,43 +133,38 @@ object AuthRoutes : Router {
                             get("/callback") {
                                 call.principal<OAuthAccessTokenResponse.OAuth2>()?.let { principal ->
                                     val state = principal.state ?: return@let
+
                                     val userInfo = provider.userInfo(principal.accessToken)
 
                                     call.sessions.get<UserSession>()?.let session@{ session ->
-                                        oauthLinkMutex.withLock {
-                                            val linkedUserId = CredentialRepository.findUserByOAuth(
+                                        if (CredentialRepository.findUserByOAuth(
+                                            provider,
+                                            userInfo.id
+                                        )?.let { UserRepository[it] }?.id == session.userId) {
+                                            redirects.remove(state)?.let { redirect ->
+                                                call.respondRedirect(redirect)
+                                            }
+                                            return@get
+                                        }
+
+                                        val user = UserRepository[session.userId] ?: return@session
+                                        val credentials = user.credentials()
+
+                                        CredentialRepository[user.id] = credentials.apply {
+                                            accounts[provider] = OAuthData(
                                                 provider,
-                                                userInfo.id
+                                                userInfo.id,
+                                                principal.accessToken,
+                                                principal.refreshToken,
                                             )
+                                        }
 
-                                            if (linkedUserId != null && linkedUserId != session.userId) {
-                                                redirects.remove(state)
-                                                return@get call.respondRedirect(
-                                                    "/account?error=account+already+linked"
-                                                )
-                                            }
-
-                                            val user = UserRepository[session.userId]
-                                                ?: return@session
-
-                                            val credentials = user.credentials()
-
-                                            CredentialRepository[user.id] = credentials.apply {
-                                                accounts[provider] = OAuthData(
-                                                    provider,
-                                                    userInfo.id,
-                                                    principal.accessToken,
-                                                    principal.refreshToken,
-                                                )
-                                            }
-
-                                            UserRepository[user.id] = user.apply {
-                                                linkedAccounts[provider] = Account(
-                                                    userInfo.id,
-                                                    userInfo.email,
-                                                    userInfo.username,
-                                                )
-                                            }
+                                        UserRepository[user.id] = user.apply {
+                                            linkedAccounts[provider] = Account(
+                                                userInfo.id,
+                                                userInfo.email,
+                                                userInfo.username,
+                                            )
                                         }
 
                                         redirects.remove(state)?.let { redirect ->
@@ -192,17 +180,13 @@ object AuthRoutes : Router {
                                         userInfo.id
                                     ) ?: run {
                                         redirects.remove(state)
-                                        return@get call.respondRedirect(
-                                            "/login?error=account+not+linked"
-                                        )
+                                        return@get call.respondRedirect("/login?error=account+not+linked")
                                     }
 
-                                    call.sessions.set(
-                                        UserSession(
-                                            UUID.randomUUID(),
-                                            uuid
-                                        )
-                                    )
+                                    call.sessions.set(UserSession(
+                                        UUID.randomUUID(),
+                                        uuid
+                                    ))
 
                                     redirects.remove(state)?.let { redirect ->
                                         call.respondRedirect(redirect)
