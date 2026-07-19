@@ -39,8 +39,14 @@ export default function AccountPage() {
     return (
         <Box
             sx={{
+                width: "100%",
                 maxWidth: 900,
                 mx: "auto",
+                px: {
+                    xs: 1,
+                    sm: 0,
+                },
+                minWidth: 0,
             }}
         >
             {!user.emailVerified && (
