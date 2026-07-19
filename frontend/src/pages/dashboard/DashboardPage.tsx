@@ -189,12 +189,8 @@ export default function DashboardPage() {
             }}
         >
             <Box sx={{px: 3, py: 3}}>
-                <Typography variant="h6" sx={{fontWeight: 700}}>
-                    ID Service
-                </Typography>
-
-                <Typography variant="caption" sx={{color: "text.secondary"}}>
-                    Identity infrastructure
+                <Typography variant="h5" sx={{fontWeight: 700, fontFamily: "Silkscreen, sans-serif",}}>
+                    HeliumID
                 </Typography>
             </Box>
 
