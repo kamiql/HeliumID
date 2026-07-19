@@ -12,6 +12,8 @@ import dev.kamiql.domain.session.UserSession
 import dev.kamiql.domain.user.Account
 import dev.kamiql.domain.user.Email
 import dev.kamiql.domain.user.User
+import dev.kamiql.middleware.middleware
+import dev.kamiql.middleware.types.EmailVerificationMiddleware
 import dev.kamiql.pending
 import dev.kamiql.redirects
 import dev.kamiql.services.BCryptService
@@ -126,6 +128,10 @@ object AuthRoutes : Router {
             }
 
             route("/oauth2") {
+                middleware {
+                    register(EmailVerificationMiddleware)
+                }
+
                 OAuthProvider.entries.forEach { provider ->
                     route(provider.name.lowercase()) {
                         authenticate("${provider.name.lowercase()}-oauth") {
