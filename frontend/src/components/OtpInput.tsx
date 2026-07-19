@@ -21,10 +21,11 @@ export default function OtpInput({
             validateChar={(value) => /^\d$/.test(value)}
             autoFocus={autoFocus}
             TextFieldsProps={{
-                type: "text",
-                inputProps: {
-                    inputMode: "numeric",
-                    pattern: "[0-9]*",
+                slotProps: {
+                    htmlInput: {
+                        inputMode: "numeric",
+                        pattern: "[0-9]*",
+                    },
                 },
             }}
         />
