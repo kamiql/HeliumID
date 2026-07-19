@@ -18,7 +18,6 @@ import DashboardPage from "./pages/dashboard/DashboardPage.tsx";
 import AccountPage from "./pages/dashboard/account/AccountPage.tsx";
 import AdminPage from "./pages/dashboard/admin/AdminPage.tsx";
 import OverviewPage from "./pages/dashboard/overview/OverviewPage.tsx";
-import VerifyPage from "./pages/verification/VerifyPage.tsx";
 import {ConfirmProvider} from "./provider/ConfirmProvider.tsx";
 import RequirePermission from "./components/auth/RequirePermission.tsx";
 import { ThemeProvider } from "./provider/ThemeProvider.tsx"
@@ -40,10 +39,6 @@ const router = createBrowserRouter([
                         element: <RegisterPage />,
                     },
                 ],
-            },
-            {
-                path: "verification",
-                element: <VerifyPage/>
             },
             {
                 element: <RequireAuth />,
