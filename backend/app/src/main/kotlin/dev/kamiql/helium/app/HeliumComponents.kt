@@ -59,6 +59,8 @@ import dev.kamiql.helium.persistence.repository.SessionRepositoryImpl
 import dev.kamiql.helium.persistence.repository.SigningKeyRepositoryImpl
 import dev.kamiql.helium.persistence.repository.UserRepositoryImpl
 import dev.kamiql.helium.persistence.repository.VerificationTokenRepositoryImpl
+import dev.kamiql.helium.provider.oidc.discordProvider
+import dev.kamiql.helium.provider.oidc.gitHubProvider
 import dev.kamiql.helium.provider.oidc.OidcIdentityProvider
 import dev.kamiql.helium.provider.oidc.OidcProviderConfig
 import dev.kamiql.helium.redis.InMemoryRateLimiter
@@ -237,6 +239,17 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         }
     }
 
+    /**
+     * The configured providers, and only those.
+     *
+     * Built from configuration rather than from a database table: concept §4.9 requires a fixed
+     * provider registry, because a registry an attacker (or a compromised administrator) can edit
+     * is an SSRF primitive pointed at whatever internal endpoint they choose.
+     *
+     * Google speaks OIDC and gets the standards-based adapter, which verifies a signed ID token.
+     * GitHub and Discord do not, so they get the API adapter — weaker, and deliberately a
+     * different class so nobody mistakes an authenticated API response for a signed assertion.
+     */
     val providers = ProviderRegistry(
         buildList<ExternalIdentityProvider> {
             config.google?.let { credentials ->
@@ -248,8 +261,19 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
                     ),
                 )
             }
+            config.github?.let { credentials ->
+                add(gitHubProvider(credentials.clientId, credentials.clientSecret, providerHttpClient, random))
+            }
+            config.discord?.let { credentials ->
+                add(discordProvider(credentials.clientId, credentials.clientSecret, providerHttpClient, random))
+            }
         },
-    )
+    ).also { registry ->
+        log.info(
+            "external identity providers enabled: {}",
+            registry.available.map { it.value }.sorted().ifEmpty { listOf("none") },
+        )
+    }
 
     // --- flows -----------------------------------------------------------------------
 

@@ -104,6 +104,11 @@ services:
     image: helium-id:${HELIUM_VERSION:-latest}
     env_file:
       - .env.prod
+      # Optional local overlay, gitignored. Later files win, so this is where credentials that
+      # must never reach a committed example file live — provider client secrets in particular.
+      # Absent on a fresh clone, hence required: false.
+      - path: .env
+        required: false
     environment:
       <<: *backend-env
       # Serves HTTP and runs the interactive flows. Background delivery belongs to the worker.
@@ -147,6 +152,8 @@ services:
     image: helium-id:${HELIUM_VERSION:-latest}
     env_file:
       - .env.prod
+      - path: .env
+        required: false
     environment:
       <<: *backend-env
       HELIUM_ROLE: worker

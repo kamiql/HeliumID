@@ -50,6 +50,11 @@ services:
       target: dev
     env_file:
       - .env.dev
+      # Optional local overlay, gitignored. Later files win, so this is where credentials that
+      # must never reach a committed example file live — provider client secrets in particular.
+      # Absent on a fresh clone, hence required: false.
+      - path: .env
+        required: false
     environment:
       # Set here rather than in .env.dev so they cannot be edited into an inconsistent state:
       # these are facts about the compose network, not deployment choices.

@@ -73,6 +73,8 @@ data class HeliumConfig(
 
     val mail: MailSettings?,
     val google: ProviderCredentials?,
+    val github: ProviderCredentials?,
+    val discord: ProviderCredentials?,
 
     val bootstrapAdmin: BootstrapAdmin?,
 ) {
@@ -213,11 +215,20 @@ data class HeliumConfig(
                 )
             }
 
-            val google = value("HELIUM_GOOGLE_CLIENT_ID")?.let { clientId ->
-                value("HELIUM_GOOGLE_CLIENT_SECRET")?.let { secret ->
-                    ProviderCredentials(clientId, Secret.of(secret))
+            /**
+             * External provider credentials.
+             *
+             * A provider is enabled by the presence of *both* halves and disabled otherwise.
+             * There is no explicit on/off flag on purpose: an enabled provider with a missing
+             * secret would fail at the token exchange, halfway through a user-visible redirect,
+             * which is a much worse place to discover a typo than startup.
+             */
+            fun providerCredentials(prefix: String): ProviderCredentials? =
+                value("HELIUM_${prefix}_CLIENT_ID")?.let { clientId ->
+                    value("HELIUM_${prefix}_CLIENT_SECRET")?.let { secret ->
+                        ProviderCredentials(clientId, Secret.of(secret))
+                    }
                 }
-            }
 
             return HeliumConfig(
                 environment = environment,
@@ -279,7 +290,9 @@ data class HeliumConfig(
                     ?: MfaPolicy.OPTIONAL,
 
                 mail = mail,
-                google = google,
+                google = providerCredentials("GOOGLE"),
+                github = providerCredentials("GITHUB"),
+                discord = providerCredentials("DISCORD"),
                 bootstrapAdmin = bootstrapAdmin,
             )
         }
