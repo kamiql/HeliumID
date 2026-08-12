@@ -49,6 +49,17 @@
 		}
 	}
 
+	# The account API is also reachable at its real path, unprefixed. This is not redundancy for
+	# its own sake: the backend builds externally-visible URLs — most importantly the external
+	# provider callback, /v1/auth/providers/{provider}/callback — from HELIUM_ISSUER_URL, without
+	# knowing that an edge rewrites /api. Registering that URL with Google only works if it
+	# actually reaches the backend. /api stays as the SPA's convenience prefix.
+	handle /v1/* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
 	handle /oauth2/* {
 		reverse_proxy backend:8080 {
 			import forwarded
