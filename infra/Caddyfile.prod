@@ -1,0 +1,135 @@
+# HeliumID — production edge.
+#
+# The site address is `:80` inside the container, published as host port 90, on the assumption
+# that TLS terminates in front of this (ingress, load balancer, or an outer Caddy). If HeliumID is
+# ever exposed directly to the internet, replace `:80` with the real hostname — Caddy will then
+# obtain and renew a certificate itself, and the `trusted_proxies` note below stops applying.
+#
+# Serving an identity provider over plain HTTP to real browsers is not an option: `Secure` cookies
+# are dropped, the `__Host-` prefix is refused, and OAuth redirect URIs stop being trustworthy.
+{
+	log {
+		output stdout
+		format json
+		level INFO
+	}
+
+	# Off because this listener is plain HTTP by design (see above). Switching the site address to
+	# a hostname means deleting this line, not keeping it.
+	auto_https off
+
+	# Which peers may set X-Forwarded-* and have Caddy believe them. This exists so an upstream TLS
+	# terminator's X-Forwarded-Proto survives; without it the backend would conclude every request
+	# arrived over plain http.
+	#
+	# NARROW THIS BEFORE GOING LIVE. With Docker port publishing the peer often appears as the
+	# bridge gateway, which is itself a private address — so `private_ranges` can amount to
+	# trusting anything that can reach port 90. Replace it with the load balancer's actual address:
+	#
+	#     trusted_proxies static 10.0.42.0/24
+	#
+	# X-Forwarded-For is not at risk either way: the `forwarded` snippet below overwrites it after
+	# this setting is applied, so the leftmost entry is always the real peer.
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+# See the dev Caddyfile for the reasoning. Short version: the backend trusts the leftmost
+# X-Forwarded-For entry, so the edge must overwrite the header rather than append to it, or every
+# per-IP rate limit becomes attacker-controlled.
+#
+# If TLS terminates upstream of this container, you also need that upstream's X-Forwarded-Proto to
+# survive — otherwise the backend believes every request arrived over http. Caddy preserves
+# inbound X-Forwarded-* from peers listed in the global `trusted_proxies` above, so add the real
+# load-balancer CIDR there rather than trusting `private_ranges` blindly.
+(forwarded) {
+	header_up X-Forwarded-For {remote_host}
+	header_up X-Real-IP {remote_host}
+}
+
+# Response headers applied to everything the edge serves.
+#
+# These are the browser-side half of the defences the backend implements server-side; neither half
+# is sufficient alone.
+(security_headers) {
+	header {
+		# Clickjacking: an identity provider's consent and login screens are the classic
+		# framing target, and a framed consent dialog is a one-click account grant.
+		X-Frame-Options "DENY"
+		# Belt and braces with the above, plus everything else CSP covers. `form-action 'self'`
+		# is the one worth reading twice: it stops an injected form from POSTing credentials
+		# off-origin even if markup injection succeeds.
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'"
+		X-Content-Type-Options "nosniff"
+		# Referrer leakage matters here specifically: authorization codes and state values ride
+		# in query strings, and a full referrer would hand them to any resource the next page
+		# loads.
+		Referrer-Policy "no-referrer"
+		Cross-Origin-Opener-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		# HSTS is intentionally absent: this listener is HTTP. Set it on the TLS terminator, and
+		# only once you are certain every subdomain can do HTTPS.
+		-Server
+	}
+}
+
+:80 {
+	import security_headers
+
+	# Edge liveness, for the container healthcheck.
+	respond /_caddy/health 200
+
+	# Metrics are operator data, not public data: scrape counters leak login volumes, failure
+	# rates and client identifiers. Scrape the backend directly on the internal network instead.
+	handle /metrics* {
+		respond 404
+	}
+
+	# --- backend --------------------------------------------------------------------------
+	handle_path /api/* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /oauth2/* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /.well-known/* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /userinfo* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /health {
+		reverse_proxy backend:8080
+	}
+
+	# --- SPA ------------------------------------------------------------------------------
+	handle {
+		root * /srv
+
+		# Hashed build assets are immutable by construction, so they can be cached hard. index.html
+		# must not be: it is the file that names the current bundle, and a cached one pins users to
+		# a build you have already rolled back.
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+		@html path / /index.html
+		header @html Cache-Control "no-store"
+
+		try_files {path} /index.html
+		file_server
+		encode zstd gzip
+	}
+}

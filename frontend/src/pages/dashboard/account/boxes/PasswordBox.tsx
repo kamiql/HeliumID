@@ -5,81 +5,69 @@ import {
     DialogContent,
     DialogTitle,
     Stack,
-    Typography,
 } from "@mui/material"
-import {useState} from "react"
-import axios from "axios"
-import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx";
-import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx";
-import {userApi} from "../../../../api/user.ts"
+import { useState } from "react"
+import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx"
+import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx"
 import PasswordField from "../../../../components/PasswordField.tsx"
-import {useUser} from "../../../../hooks/useUser.ts"
+import ErrorAlert from "../../../../components/ErrorAlert.tsx"
+import { useUser } from "../../../../hooks/useUser.ts"
+import { accountApi } from "../../../../api/account.ts"
+import { describeFieldError, toHeliumError } from "../../../../api/problem.ts"
+import { evaluatePassword, usePasswordRequirements } from "../../../../hooks/usePasswordRequirements.ts"
+import { notify } from "../../../../stores/notice.store.ts"
 
 export default function PasswordBox() {
     const user = useUser()
+    const requirements = usePasswordRequirements()
 
     const [open, setOpen] = useState(false)
     const [loading, setLoading] = useState(false)
-    const [error, setError] = useState("")
+    const [error, setError] = useState<unknown>(null)
+    const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
-    const [oldPassword, setOldPassword] = useState("")
+    const [currentPassword, setCurrentPassword] = useState("")
     const [newPassword, setNewPassword] = useState("")
-    const [passwordConfirm, setPasswordConfirm] = useState("")
+    const [confirm, setConfirm] = useState("")
 
-    const handleOpen = () => {
-        setError("")
-        setOldPassword("")
+    const checks = evaluatePassword(requirements, newPassword, [user.username, user.email])
+    const policyMet = checks.every((check) => check.satisfied !== false)
+
+    const reset = () => {
+        setCurrentPassword("")
         setNewPassword("")
-        setPasswordConfirm("")
-        setOpen(true)
+        setConfirm("")
+        setError(null)
+        setFieldErrors({})
     }
 
     const handleClose = () => {
         if (loading) return
-
         setOpen(false)
-        setError("")
-        setOldPassword("")
-        setNewPassword("")
-        setPasswordConfirm("")
+        reset()
     }
 
     const handleChange = async () => {
-        if (!oldPassword || !newPassword || !passwordConfirm) {
-            setError("Please fill out all fields")
-            return
-        }
-
-        if (newPassword !== passwordConfirm) {
-            setError("Passwords do not match")
-            return
-        }
+        if (!currentPassword || !newPassword || newPassword !== confirm) return
 
         try {
             setLoading(true)
-            setError("")
+            setError(null)
+            setFieldErrors({})
 
-            await userApi.changePassword({
-                old: oldPassword,
-                new: newPassword,
+            await accountApi.changePassword({
+                current_password: currentPassword,
+                new_password: newPassword,
             })
 
-            handleClose()
-            window.location.reload()
-        } catch (error) {
-            if (
-                axios.isAxiosError(error) &&
-                error.response?.status === 401
-            ) {
-                setError(
-                    error.response?.data?.message ||
-                    error.response?.data ||
-                    "Failed to change password",
-                )
-                return
-            }
-
-            setError("Failed to change password")
+            setOpen(false)
+            reset()
+            // The server revokes the other sessions as part of the change; this one survives.
+            notify("Password changed. Other sessions were signed out.", "success")
+        } catch (caught) {
+            const heliumError = toHeliumError(caught)
+            setFieldErrors(heliumError.fieldErrors)
+            setError(heliumError)
         } finally {
             setLoading(false)
         }
@@ -94,7 +82,7 @@ export default function PasswordBox() {
                     {
                         id: "email",
                         label: "Email verification required",
-                        satisfied: user.emailVerified,
+                        satisfied: user.email_verified,
                     },
                 ]}
                 sx={{
@@ -104,24 +92,22 @@ export default function PasswordBox() {
             >
                 <AccountButton
                     variant="outlined"
-                    onClick={handleOpen}
+                    onClick={() => {
+                        reset()
+                        setOpen(true)
+                    }}
                 >
                     Change password
                 </AccountButton>
             </AccountBox>
 
-            <Dialog
-                open={open}
-                onClose={handleClose}
-                fullWidth
-                maxWidth="xs"
-            >
+            <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">
                 <DialogTitle>Change password</DialogTitle>
 
                 <DialogContent>
                     <Stack spacing={1}>
                         <Alert severity="warning">
-                            You will be logged out after changing your password.
+                            Every other signed-in device will be signed out.
                         </Alert>
 
                         <PasswordField
@@ -131,11 +117,17 @@ export default function PasswordBox() {
                             label="Current password"
                             autoComplete="current-password"
                             autoFocus
-                            value={oldPassword}
+                            value={currentPassword}
                             onType={(value) => {
-                                setOldPassword(value)
-                                setError("")
+                                setCurrentPassword(value)
+                                setError(null)
                             }}
+                            error={Boolean(fieldErrors.current_password)}
+                            helperText={
+                                fieldErrors.current_password
+                                    ? describeFieldError(fieldErrors.current_password)
+                                    : undefined
+                            }
                         />
 
                         <PasswordField
@@ -147,10 +139,18 @@ export default function PasswordBox() {
                             value={newPassword}
                             onType={(value) => {
                                 setNewPassword(value)
-                                setError("")
+                                setError(null)
                             }}
                             validate
+                            identifiers={[user.username, user.email]}
+                            error={Boolean(fieldErrors.new_password)}
                         />
+
+                        {fieldErrors.new_password && (
+                            <Alert severity="error">
+                                {describeFieldError(fieldErrors.new_password)}
+                            </Alert>
+                        )}
 
                         <PasswordField
                             margin="normal"
@@ -158,38 +158,34 @@ export default function PasswordBox() {
                             fullWidth
                             label="Confirm new password"
                             autoComplete="new-password"
-                            value={passwordConfirm}
+                            value={confirm}
                             onType={(value) => {
-                                setPasswordConfirm(value)
-                                setError("")
+                                setConfirm(value)
+                                setError(null)
                             }}
                             matches={newPassword}
                             validate
                         />
 
-                        {error && (
-                            <Typography
-                                color="error"
-                                variant="body2"
-                            >
-                                {error}
-                            </Typography>
-                        )}
+                        {error !== null && <ErrorAlert error={error} hideFieldErrors />}
                     </Stack>
                 </DialogContent>
 
                 <DialogActions>
-                    <AccountButton
-                        onClick={handleClose}
-                        disabled={loading}
-                    >
+                    <AccountButton onClick={handleClose} disabled={loading}>
                         Cancel
                     </AccountButton>
 
                     <AccountButton
                         variant="contained"
-                        onClick={handleChange}
-                        disabled={loading}
+                        onClick={() => void handleChange()}
+                        disabled={
+                            loading ||
+                            !currentPassword ||
+                            !newPassword ||
+                            newPassword !== confirm ||
+                            !policyMet
+                        }
                     >
                         Change password
                     </AccountButton>

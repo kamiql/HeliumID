@@ -4,80 +4,87 @@ import {
     Button,
     Container,
     Divider,
-    Link,
+    Link as MuiLink,
     Paper,
+    TextField,
     Typography,
 } from "@mui/material"
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined"
 import { useState } from "react"
-import EmailField from "../../components/EmailField.tsx"
+import { Link, useNavigate, useSearchParams } from "react-router"
 import PasswordField from "../../components/PasswordField.tsx"
-import { DiscordIcon, GoogleIcon } from "../../components/global/Icons.tsx"
+import ErrorAlert from "../../components/ErrorAlert.tsx"
+import MFADialog from "../../components/MFADialog.tsx"
+import ProviderButtons from "../../components/ProviderButtons.tsx"
 import { useAuth } from "../../hooks/useAuth.ts"
 import { authApi } from "../../api/auth.ts"
-import { useSearchParams } from "react-router"
-import MFADialog from "../../components/MFADialog.tsx"
-import VerificationDialog from "../../components/VerificationDialog.tsx"
-import type { RequireMFAResponse } from "../../stores/auth.store.ts"
+import { ErrorCode, toHeliumError } from "../../api/problem.ts"
+import { notify } from "../../stores/notice.store.ts"
+import type { MfaChallenge } from "../../stores/auth.store.ts"
+import type { MfaMethod } from "../../api/types.ts"
 
 export default function LoginPage() {
-    const {
-        login,
-        completeLogin,
-        loading,
-    } = useAuth()
-
+    const { login, completeMfa, loading } = useAuth()
+    const navigate = useNavigate()
     const [searchParams] = useSearchParams()
-    const [email, setEmail] = useState("")
-    const [password, setPassword] = useState("")
-    const [error, setError] = useState(searchParams.get("error"))
 
-    const [mfa, setMfa] = useState<RequireMFAResponse | null>(null)
-    const [verificationId, setVerificationId] = useState<string | null>(null)
+    const [identifier, setIdentifier] = useState("")
+    const [password, setPassword] = useState("")
+    const [error, setError] = useState<unknown>(null)
+    const [challenge, setChallenge] = useState<MfaChallenge | null>(null)
+    const [needsVerification, setNeedsVerification] = useState(false)
+
+    const returnTo = searchParams.get("return_to")
+
+    const finish = () => {
+        // Only same-origin relative paths are honoured: taking an absolute URL from the query
+        // string would turn this page into an open redirector.
+        const safe = returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/"
+        navigate(safe, { replace: true })
+    }
 
     const handleLogin = async () => {
-        if (!email || !password) {
-            setError("Please fill out all fields")
+        if (!identifier || !password) {
+            setError(new Error("missing"))
             return
         }
 
         try {
-            setError("")
+            setError(null)
+            setNeedsVerification(false)
 
-            const res = await login({
-                email,
-                password,
-            })
+            const pending = await login({ identifier, password })
 
-            if (res) {
-                setMfa(res)
+            if (pending) {
+                // Phase two. The password is dropped here — only the transaction handle matters.
+                setPassword("")
+                setChallenge(pending)
+                return
             }
-        } catch {
-            setError("Invalid credentials")
+
+            finish()
+        } catch (caught) {
+            const heliumError = toHeliumError(caught)
+            if (heliumError.is(ErrorCode.EMAIL_UNVERIFIED)) {
+                setNeedsVerification(true)
+            }
+            setError(heliumError)
         }
     }
 
-    const handleMFA = async (type: string) => {
-        if (!mfa) {
-            return
-        }
+    const handleMfa = async (method: MfaMethod, code: string) => {
+        await completeMfa(challenge!.transactionId, method, code)
+        setChallenge(null)
+        finish()
+    }
 
+    const handleResend = async () => {
         try {
-            const response = await authApi.mfa({
-                userId: mfa.userId,
-                type,
-            })
-
-            setMfa(null)
-            setVerificationId(response.data)
-        } catch {
-            setError("Failed to start verification")
+            await authApi.resendVerification(identifier)
+            notify("If that address needs verification, we have sent a new link.", "success")
+        } catch (caught) {
+            setError(caught)
         }
-    }
-
-    const handleVerificationCompleted = async () => {
-        setVerificationId(null)
-        await completeLogin()
     }
 
     return (
@@ -119,20 +126,27 @@ export default function LoginPage() {
                             Sign in
                         </Typography>
 
-                        <Box component="form" sx={{ width: "100%" }}>
-                            <EmailField
+                        <Box
+                            component="form"
+                            sx={{ width: "100%" }}
+                            onSubmit={(event) => {
+                                event.preventDefault()
+                                void handleLogin()
+                            }}
+                        >
+                            <TextField
                                 margin="normal"
                                 required
                                 fullWidth
-                                label="Email"
-                                autoComplete="email"
+                                label="Username or email"
+                                autoComplete="username"
                                 autoFocus
-                                value={email}
-                                onType={(value) => {
-                                    setEmail(value)
-                                    setError("")
+                                value={identifier}
+                                onChange={(event) => {
+                                    setIdentifier(event.target.value)
+                                    setError(null)
                                 }}
-                                error={!!error && !email}
+                                error={Boolean(error) && !identifier}
                             />
 
                             <PasswordField
@@ -144,26 +158,37 @@ export default function LoginPage() {
                                 value={password}
                                 onType={(value) => {
                                     setPassword(value)
-                                    setError("")
+                                    setError(null)
                                 }}
-                                error={!!error && !password}
+                                error={Boolean(error) && !password}
                             />
 
-                            {error && (
-                                <Typography
-                                    color="error"
-                                    variant="body2"
-                                    sx={{ mt: 1 }}
-                                >
-                                    {error}
+                            {error !== null && (identifier && password ? (
+                                <Box sx={{ mt: 2 }}>
+                                    <ErrorAlert error={error} />
+                                </Box>
+                            ) : (
+                                <Typography color="error" variant="body2" sx={{ mt: 1 }}>
+                                    Please fill out all fields
                                 </Typography>
+                            ))}
+
+                            {needsVerification && (
+                                <Button
+                                    fullWidth
+                                    variant="text"
+                                    sx={{ mt: 1 }}
+                                    onClick={() => void handleResend()}
+                                >
+                                    Resend verification email
+                                </Button>
                             )}
 
                             <Button
+                                type="submit"
                                 fullWidth
                                 variant="contained"
                                 disabled={loading}
-                                onClick={handleLogin}
                                 sx={{
                                     mt: 2,
                                     mb: 2,
@@ -179,14 +204,12 @@ export default function LoginPage() {
                                     justifyContent: "center",
                                 }}
                             >
-                                <Link href="#" variant="body2">
+                                <MuiLink component={Link} to="/forgot-password" variant="body2">
                                     Forgot password?
-                                </Link>
+                                </MuiLink>
                             </Box>
 
-                            <Divider sx={{ my: 2 }}>
-                                or
-                            </Divider>
+                            <Divider sx={{ my: 2 }}>or</Divider>
 
                             <Box
                                 sx={{
@@ -195,36 +218,13 @@ export default function LoginPage() {
                                     gap: 2,
                                 }}
                             >
-                                <Button
-                                    fullWidth
-                                    variant="outlined"
-                                    startIcon={<GoogleIcon />}
-                                    onClick={() => {
-                                        authApi.oauth("google")
-                                    }}
-                                >
-                                    Sign in with Google
-                                </Button>
-
-                                <Button
-                                    fullWidth
-                                    variant="outlined"
-                                    startIcon={<DiscordIcon />}
-                                    onClick={() => {
-                                        authApi.oauth("discord")
-                                    }}
-                                >
-                                    Sign in with Discord
-                                </Button>
+                                <ProviderButtons />
 
                                 <Typography sx={{ textAlign: "center" }}>
                                     Don&apos;t have an account?{" "}
-                                    <Link
-                                        href="/register"
-                                        variant="body2"
-                                    >
+                                    <MuiLink component={Link} to="/register" variant="body2">
                                         Sign up
-                                    </Link>
+                                    </MuiLink>
                                 </Typography>
                             </Box>
                         </Box>
@@ -233,16 +233,12 @@ export default function LoginPage() {
             </Container>
 
             <MFADialog
-                open={mfa !== null}
-                types={mfa?.types ?? []}
-                onSelect={handleMFA}
-            />
-
-            <VerificationDialog
-                open={verificationId !== null}
-                verificationId={verificationId}
-                onClose={() => setVerificationId(null)}
-                onCompleted={handleVerificationCompleted}
+                challenge={challenge}
+                onSubmit={handleMfa}
+                onCancel={() => {
+                    setChallenge(null)
+                    notify("Verification cancelled. Please sign in again.", "info")
+                }}
             />
         </>
     )

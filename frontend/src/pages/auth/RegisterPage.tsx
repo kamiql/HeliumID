@@ -1,61 +1,103 @@
 import {
+    Alert,
     Avatar,
     Box,
     Button,
     Container,
-    Link,
+    Link as MuiLink,
     Paper,
+    TextField,
     Typography,
 } from "@mui/material"
 import PersonAddOutlinedIcon from "@mui/icons-material/PersonAddOutlined"
+import MarkEmailReadOutlinedIcon from "@mui/icons-material/MarkEmailReadOutlined"
 import { useState } from "react"
+import { Link } from "react-router"
 import EmailField from "../../components/EmailField.tsx"
 import PasswordField from "../../components/PasswordField.tsx"
-import {useAuth} from "../../hooks/useAuth.ts";
-import axios from "axios";
-import {useNavigate} from "react-router";
+import ErrorAlert from "../../components/ErrorAlert.tsx"
+import { useAuth } from "../../hooks/useAuth.ts"
+import { describeFieldError, toHeliumError } from "../../api/problem.ts"
+import { evaluatePassword, usePasswordRequirements } from "../../hooks/usePasswordRequirements.ts"
 
 export default function RegisterPage() {
     const { register, loading } = useAuth()
-    const navigate = useNavigate()
+    const requirements = usePasswordRequirements()
 
     const [step, setStep] = useState(1)
-    const [error, setError] = useState("")
+    const [submitted, setSubmitted] = useState(false)
+    const [error, setError] = useState<unknown>(null)
+    const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
     const [username, setUsername] = useState("")
     const [firstName, setFirstName] = useState("")
     const [lastName, setLastName] = useState("")
-
     const [email, setEmail] = useState("")
     const [password, setPassword] = useState("")
     const [passwordConfirm, setPasswordConfirm] = useState("")
 
+    const checks = evaluatePassword(requirements, password, [username, email])
+    const policyMet = checks.every((check) => check.satisfied !== false)
+
+    const clearErrors = () => {
+        setError(null)
+        setFieldErrors({})
+    }
+
     const handleRegister = async () => {
-        if (!email || !password || !passwordConfirm) {
-            setError("Please fill out all fields")
+        if (!email || !password || password !== passwordConfirm) {
+            setError(new Error("incomplete"))
             return
         }
 
         try {
-            setError("")
-
-            await register({
-                username,
-                firstName,
-                lastName,
-                email,
-                password,
-            }).then(() => {
-                navigate("/")
-            })
-        } catch (error) {
-            if (axios.isAxiosError(error) && error.response?.status === 409) {
-                setError(error.response.data)
-                return
+            clearErrors()
+            await register({ username, email, password, firstName, lastName })
+            // 202 with an opaque body whether or not the address was already taken, so this
+            // screen must look identical either way — it must not confirm the address exists.
+            setSubmitted(true)
+        } catch (caught) {
+            const heliumError = toHeliumError(caught)
+            setFieldErrors(heliumError.fieldErrors)
+            setError(heliumError)
+            if (heliumError.fieldErrors.username || heliumError.fieldErrors.firstName) {
+                setStep(1)
             }
-
-            setError("Failed to create account")
         }
+    }
+
+    if (submitted) {
+        return (
+            <Container component="main" maxWidth="xs">
+                <Paper
+                    elevation={8}
+                    sx={{ p: 4, width: "100%", borderRadius: 3, backgroundColor: "background.paper" }}
+                >
+                    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                        <Avatar sx={{ mb: 2, bgcolor: "success.main" }}>
+                            <MarkEmailReadOutlinedIcon />
+                        </Avatar>
+
+                        <Typography
+                            component="h1"
+                            variant="h4"
+                            sx={{ fontFamily: "Silkscreen", mb: 3, textAlign: "center" }}
+                        >
+                            Check your inbox
+                        </Typography>
+
+                        <Typography sx={{ color: "text.secondary", textAlign: "center", mb: 3 }}>
+                            If that address can be registered, we have sent a verification link to{" "}
+                            <strong>{email}</strong>. Open it to finish setting up your account.
+                        </Typography>
+
+                        <Button component={Link} to="/login" fullWidth variant="contained">
+                            Back to sign in
+                        </Button>
+                    </Box>
+                </Paper>
+            </Container>
+        )
     }
 
     return (
@@ -96,102 +138,75 @@ export default function RegisterPage() {
                         Sign up
                     </Typography>
 
-                    <Box component="form" sx={{ width: "100%" }}>
+                    <Box
+                        component="form"
+                        sx={{ width: "100%" }}
+                        onSubmit={(event) => {
+                            event.preventDefault()
+                            if (step === 2) void handleRegister()
+                        }}
+                    >
                         {step === 1 && (
                             <>
-                                <Box
-                                    component="input"
-                                    placeholder="Username"
+                                <TextField
+                                    margin="normal"
+                                    required
+                                    fullWidth
+                                    label="Username"
+                                    autoComplete="username"
+                                    autoFocus
                                     value={username}
                                     onChange={(event) => {
                                         setUsername(event.target.value)
-                                        setError("")
+                                        clearErrors()
                                     }}
-                                    sx={{
-                                        width: "100%",
-                                        mb: 2,
-                                        p: 1.8,
-                                        borderRadius: 1,
-                                        border: "1px solid",
-                                        borderColor: error && !username
-                                            ? "error.main"
-                                            : "divider",
-                                        background: "transparent",
-                                        color: "text.primary",
-                                        fontSize: "1rem",
-                                    }}
+                                    error={Boolean(fieldErrors.username)}
+                                    helperText={
+                                        fieldErrors.username
+                                            ? describeFieldError(fieldErrors.username)
+                                            : undefined
+                                    }
                                 />
 
-                                <Box
-                                    component="input"
-                                    placeholder="First name"
+                                <TextField
+                                    margin="normal"
+                                    fullWidth
+                                    label="First name"
+                                    autoComplete="given-name"
                                     value={firstName}
                                     onChange={(event) => {
                                         setFirstName(event.target.value)
-                                        setError("")
-                                    }}
-                                    sx={{
-                                        width: "100%",
-                                        mb: 2,
-                                        p: 1.8,
-                                        borderRadius: 1,
-                                        border: "1px solid",
-                                        borderColor: error && !firstName
-                                            ? "error.main"
-                                            : "divider",
-                                        background: "transparent",
-                                        color: "text.primary",
-                                        fontSize: "1rem",
+                                        clearErrors()
                                     }}
                                 />
 
-                                <Box
-                                    component="input"
-                                    placeholder="Last name"
+                                <TextField
+                                    margin="normal"
+                                    fullWidth
+                                    label="Last name"
+                                    autoComplete="family-name"
                                     value={lastName}
                                     onChange={(event) => {
                                         setLastName(event.target.value)
-                                        setError("")
-                                    }}
-                                    sx={{
-                                        width: "100%",
-                                        mb: 2,
-                                        p: 1.8,
-                                        borderRadius: 1,
-                                        border: "1px solid",
-                                        borderColor: error && !lastName
-                                            ? "error.main"
-                                            : "divider",
-                                        background: "transparent",
-                                        color: "text.primary",
-                                        fontSize: "1rem",
+                                        clearErrors()
                                     }}
                                 />
 
-                                {error && (
-                                    <Typography
-                                        color="error"
-                                        variant="body2"
-                                        sx={{ mb: 2 }}
-                                    >
-                                        {error}
-                                    </Typography>
-                                )}
+                                {error !== null && <ErrorAlert error={error} sx={{ mt: 2 }} />}
 
                                 <Button
                                     fullWidth
                                     variant="contained"
                                     onClick={() => {
-                                        if (!username || !firstName || !lastName) {
-                                            setError("Please fill out all fields")
+                                        if (!username) {
+                                            setError(new Error("incomplete"))
                                             return
                                         }
-
-                                        setError("")
+                                        clearErrors()
                                         setStep(2)
                                     }}
                                     sx={{
-                                        mt: 1,
+                                        mt: 2,
                                         py: 1.2,
                                     }}
                                 >
@@ -212,10 +227,14 @@ export default function RegisterPage() {
                                     value={email}
                                     onType={(value) => {
                                         setEmail(value)
-                                        setError("")
+                                        clearErrors()
                                     }}
-                                    error={!!error && !email}
-                                    helperText={!!error && !email ? error : undefined}
+                                    error={Boolean(fieldErrors.email)}
+                                    helperText={
+                                        fieldErrors.email
+                                            ? describeFieldError(fieldErrors.email)
+                                            : undefined
+                                    }
                                 />
 
                                 <PasswordField
@@ -227,12 +246,18 @@ export default function RegisterPage() {
                                     value={password}
                                     onType={(value) => {
                                         setPassword(value)
-                                        setError("")
+                                        clearErrors()
                                     }}
                                     validate
-                                    error={!!error && !password}
-                                    helperText={!!error && !password ? error : undefined}
+                                    identifiers={[username, email]}
+                                    error={Boolean(fieldErrors.password)}
                                 />
+
+                                {fieldErrors.password && (
+                                    <Alert severity="error" sx={{ mt: 1 }}>
+                                        {describeFieldError(fieldErrors.password)}
+                                    </Alert>
+                                )}
 
                                 <PasswordField
                                     margin="normal"
@@ -243,33 +268,24 @@ export default function RegisterPage() {
                                     value={passwordConfirm}
                                     onType={(value) => {
                                         setPasswordConfirm(value)
-                                        setError("")
+                                        clearErrors()
                                     }}
                                     matches={password}
                                     validate
-                                    error={!!error && !passwordConfirm}
-                                    helperText={
-                                        !!error && !passwordConfirm
-                                            ? error
-                                            : undefined
-                                    }
                                 />
 
-                                {error && (
-                                    <Typography
-                                        color="error"
-                                        variant="body2"
-                                        sx={{ mt: 1 }}
-                                    >
-                                        {error}
-                                    </Typography>
-                                )}
+                                {error !== null && <ErrorAlert error={error} hideFieldErrors sx={{ mt: 2 }} />}
 
                                 <Button
+                                    type="submit"
                                     fullWidth
                                     variant="contained"
-                                    disabled={loading}
-                                    onClick={handleRegister}
+                                    disabled={
+                                        loading ||
+                                        !policyMet ||
+                                        password.length === 0 ||
+                                        password !== passwordConfirm
+                                    }
                                     sx={{
                                         mt: 2,
                                         mb: 2,
@@ -283,7 +299,7 @@ export default function RegisterPage() {
                                     fullWidth
                                     variant="text"
                                     onClick={() => {
-                                        setError("")
+                                        clearErrors()
                                         setStep(1)
                                     }}
                                 >
@@ -294,12 +310,9 @@ export default function RegisterPage() {
 
                         <Typography sx={{ textAlign: "center", mt: 2 }}>
                             Already have an account?{" "}
-                            <Link
-                                href="/login"
-                                variant="body2"
-                            >
+                            <MuiLink component={Link} to="/login" variant="body2">
                                 Sign in
-                            </Link>
+                            </MuiLink>
                         </Typography>
                     </Box>
                 </Box>

@@ -5,103 +5,82 @@ import {
     DialogContent,
     DialogTitle,
     Stack,
+    TextField,
     Typography,
 } from "@mui/material"
-import {useState} from "react"
-import type {AxiosError} from "axios"
-import {verificationApi} from "../api/user.ts"
-import OtpInput from "./OtpInput.tsx"
+import { useState } from "react"
+import { describeError } from "../api/problem.ts"
 
 type VerificationDialogProps = {
     open: boolean
-    verificationId: string | null
+    title?: string
+    description?: string
+    label?: string
+    onSubmit: (token: string) => Promise<void>
     onClose: () => void
     onCompleted: () => void
 }
 
-type VerificationErrorResponse = {
-    message?: string
-}
-
+/**
+ * Generic "paste the token from your email" dialog.
+ *
+ * Email confirmation is a single-use link token rather than a short numeric code: the token is
+ * long and random, so it cannot be brute forced the way a six-digit code could, and it only
+ * ever reaches the address being proven.
+ */
 export default function VerificationDialog({
-                                               open,
-                                               verificationId,
-                                               onClose,
-                                               onCompleted,
-                                           }: VerificationDialogProps) {
-    const [code, setCode] = useState("")
+    open,
+    title = "Confirm your email",
+    description = "Paste the confirmation code from the email we sent you.",
+    label = "Confirmation code",
+    onSubmit,
+    onClose,
+    onCompleted,
+}: VerificationDialogProps) {
+    const [token, setToken] = useState("")
     const [error, setError] = useState("")
     const [loading, setLoading] = useState(false)
 
-    const handleVerify = async (verificationCode = code) => {
-        if (!verificationId || verificationCode.length !== 6 || loading) {
-            return
-        }
+    const handleSubmit = async () => {
+        if (loading || token.trim().length === 0) return
 
         try {
             setLoading(true)
             setError("")
-
-            await verificationApi.verify(
-                verificationId,
-                verificationCode,
-            )
-
+            await onSubmit(token.trim())
+            setToken("")
             onCompleted()
-        } catch (error) {
-            const axiosError = error as AxiosError<VerificationErrorResponse>
-
-            if (axiosError.response?.status === 400) {
-                setError("Invalid or expired verification code")
-            } else {
-                setError(
-                    axiosError.response?.data?.message ||
-                    "Failed to verify code",
-                )
-            }
+        } catch (caught) {
+            setError(describeError(caught))
         } finally {
             setLoading(false)
         }
     }
 
-    const handleCodeChange = (value: string) => {
-        setCode(value)
-
-        if (value.length === 6) {
-            void handleVerify(value)
-        }
-    }
-
     return (
-        <Dialog
-            open={open}
-            onClose={onClose}
-            fullWidth
-            maxWidth="xs"
-        >
-            <DialogTitle>Email verification</DialogTitle>
+        <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
+            <DialogTitle>{title}</DialogTitle>
 
             <DialogContent>
                 <Stack spacing={3}>
-                    <Typography
-                        sx={{
-                            color: "text.secondary",
-                        }}
-                    >
-                        Enter the 6-digit code.
-                    </Typography>
+                    <Typography sx={{ color: "text.secondary" }}>{description}</Typography>
 
-                    <OtpInput
-                        value={code}
-                        onChange={handleCodeChange}
+                    <TextField
+                        fullWidth
                         autoFocus
+                        label={label}
+                        value={token}
+                        onChange={(event) => {
+                            setToken(event.target.value)
+                            setError("")
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") void handleSubmit()
+                        }}
                     />
 
                     {error && (
-                        <Typography
-                            color="error"
-                            variant="body2"
-                        >
+                        <Typography color="error" variant="body2">
                             {error}
                         </Typography>
                     )}
@@ -109,22 +88,16 @@ export default function VerificationDialog({
             </DialogContent>
 
             <DialogActions>
-                <Button
-                    onClick={onClose}
-                    disabled={loading}
-                >
+                <Button onClick={onClose} disabled={loading}>
                     Close
                 </Button>
 
                 <Button
                     variant="contained"
-                    onClick={() => void handleVerify()}
-                    disabled={
-                        loading ||
-                        code.length !== 6
-                    }
+                    onClick={() => void handleSubmit()}
+                    disabled={loading || token.trim().length === 0}
                 >
-                    Verify
+                    Confirm
                 </Button>
             </DialogActions>
         </Dialog>

@@ -1,25 +1,50 @@
 import { create } from "zustand"
-import {
-    authApi,
-    type LoginRequest,
-    type RegisterRequest,
-} from "../api/auth"
-import type { User } from "../api/user"
+import { authApi } from "../api/auth.ts"
+import { accountApi } from "../api/account.ts"
+import { setCsrfToken } from "../api/csrf.ts"
+import { ErrorCode, toHeliumError } from "../api/problem.ts"
+import type { LoginRequest, MfaMethod, RegisterRequest, User } from "../api/types.ts"
 
-export type RequireMFAResponse = {
-    userId: string
-    types: string[]
+/**
+ * The `mfa_required` challenge, lifted out of the problem response.
+ *
+ * Login is two-phase: the password buys a short-lived, single-use transaction handle, and the
+ * second factor is presented against that handle. The password is never resent.
+ */
+export type MfaChallenge = {
+    transactionId: string
+    methods: MfaMethod[]
+    expiresAt: string | null
+}
+
+const KNOWN_METHODS: MfaMethod[] = ["totp", "recovery_code", "webauthn"]
+
+function parseMethods(methods: string[]): MfaMethod[] {
+    const parsed = methods.filter((method): method is MfaMethod =>
+        (KNOWN_METHODS as string[]).includes(method),
+    )
+    // A challenge with no renderable method is still a TOTP challenge in practice; offering
+    // nothing would strand the user on a dialog with no inputs.
+    return parsed.length > 0 ? parsed : ["totp"]
 }
 
 type AuthState = {
     user: User | null
     initialized: boolean
     loading: boolean
-    initialize: () => Promise<void>
-    login: (request: LoginRequest) => Promise<RequireMFAResponse | null>
-    completeLogin: () => Promise<void>
+
+    /** Fetches the session and the CSRF token. Must run before any state-changing request. */
+    bootstrap: () => Promise<void>
+    /** Re-reads `/v1/me` after a profile or MFA change. */
+    refresh: () => Promise<void>
+    /** Resolves to a challenge when a second factor is required, `null` when signed in. */
+    login: (request: LoginRequest) => Promise<MfaChallenge | null>
+    completeMfa: (transactionId: string, method: MfaMethod, code: string) => Promise<void>
     register: (request: RegisterRequest) => Promise<void>
     logout: () => Promise<void>
+    /** Drops local state without calling the server, for when the server says it is gone. */
+    clearSession: () => void
+    setUser: (user: User) => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -27,23 +52,33 @@ export const useAuthStore = create<AuthState>((set) => ({
     initialized: false,
     loading: false,
 
-    initialize: async () => {
+    bootstrap: async () => {
         set({ loading: true })
 
         try {
-            const response = await authApi.me()
+            const { data } = await authApi.session()
+            // Store the token before anything can issue a write: the request interceptor reads
+            // the cookie first, but this covers the moment before the cookie round-trips.
+            setCsrfToken(data.csrf_token)
 
             set({
-                user: response.data,
+                user: data.authenticated ? (data.user ?? null) : null,
                 initialized: true,
                 loading: false,
             })
         } catch {
-            set({
-                user: null,
-                initialized: true,
-                loading: false,
-            })
+            set({ user: null, initialized: true, loading: false })
+        }
+    },
+
+    refresh: async () => {
+        try {
+            const { data } = await accountApi.me()
+            set({ user: data })
+        } catch (error) {
+            if (toHeliumError(error).is(ErrorCode.AUTH_REQUIRED)) {
+                set({ user: null })
+            }
         }
     },
 
@@ -51,40 +86,39 @@ export const useAuthStore = create<AuthState>((set) => ({
         set({ loading: true })
 
         try {
-            const response = await authApi.login(request)
-
-            if (response.status === 202) {
-                set({ loading: false })
-                return response.data
-            }
-
-            const userResponse = await authApi.me()
-
-            set({
-                user: userResponse.data,
-                loading: false,
-            })
-
+            await authApi.login(request)
+            // 204: the session cookie and a rotated CSRF token are already set; re-bootstrap to
+            // pick both up.
+            const { data } = await authApi.session()
+            setCsrfToken(data.csrf_token)
+            set({ user: data.user ?? null, loading: false })
             return null
         } catch (error) {
             set({ loading: false })
-            throw error
+
+            const heliumError = toHeliumError(error)
+            if (heliumError.is(ErrorCode.MFA_REQUIRED) && heliumError.transactionId) {
+                return {
+                    transactionId: heliumError.transactionId,
+                    methods: parseMethods(heliumError.methods),
+                    expiresAt: heliumError.problem?.expires_at ?? null,
+                }
+            }
+            throw heliumError
         }
     },
 
-    completeLogin: async () => {
+    completeMfa: async (transactionId, method, code) => {
         set({ loading: true })
 
         try {
-            const response = await authApi.me()
-
-            set({
-                user: response.data,
-                loading: false,
-            })
+            await authApi.verifyMfa({ transaction_id: transactionId, method, code })
+            const { data } = await authApi.session()
+            setCsrfToken(data.csrf_token)
+            set({ user: data.user ?? null, loading: false })
         } catch (error) {
             set({ loading: false })
-            throw error
+            throw toHeliumError(error)
         }
     },
 
@@ -92,17 +126,13 @@ export const useAuthStore = create<AuthState>((set) => ({
         set({ loading: true })
 
         try {
+            // 202 and nothing else, whether or not the address was already taken. No session is
+            // issued: the user must verify their email first.
             await authApi.register(request)
-
-            const response = await authApi.me()
-
-            set({
-                user: response.data,
-                loading: false,
-            })
+            set({ loading: false })
         } catch (error) {
             set({ loading: false })
-            throw error
+            throw toHeliumError(error)
         }
     },
 
@@ -111,14 +141,18 @@ export const useAuthStore = create<AuthState>((set) => ({
 
         try {
             await authApi.logout()
-
-            set({
-                user: null,
-                loading: false,
-            })
-        } catch (error) {
-            set({ loading: false })
-            throw error
+        } catch {
+            // Logout is idempotent server-side; a failure here must still clear the client.
+        } finally {
+            setCsrfToken(null)
+            set({ user: null, loading: false })
         }
     },
+
+    clearSession: () => {
+        setCsrfToken(null)
+        set({ user: null })
+    },
+
+    setUser: (user) => set({ user }),
 }))

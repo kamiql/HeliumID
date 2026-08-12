@@ -1,0 +1,23 @@
+# node_modules is excluded on purpose. The image installs from the lockfile; copying a host
+# node_modules in would import whatever platform-specific binaries (esbuild, rollup) the host
+# happens to have, which is exactly the class of bug that only shows up in CI.
+node_modules
+dist
+dist-ssr
+.vite
+
+# Local secrets. Vite inlines every VITE_-prefixed variable into the bundle, so a .env that
+# reached the build context could end up published as static JavaScript.
+.env
+.env.*
+*.local
+
+# VCS and tooling
+.git
+.github
+.idea
+.vscode
+*.log
+
+.DS_Store
+Thumbs.db

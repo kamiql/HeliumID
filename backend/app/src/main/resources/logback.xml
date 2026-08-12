@@ -1,0 +1,51 @@
+<configuration>
+    <!--
+      Structured JSON logs (concept §7.5). The field list is deliberate: request_id and
+      trace_id for correlation, plus the standard event fields.
+
+      What is NOT here is the point: no pattern that could interpolate a cookie, no MDC key
+      carrying a token. Secrets are redacted at the source — Secret.toString(),
+      PasswordHash.toString(), IssuedSession.toString() — rather than filtered here, because a
+      filter only catches what somebody remembered to tell it about.
+    -->
+    <appender name="json" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdcKeyName>request_id</includeMdcKeyName>
+            <includeMdcKeyName>trace_id</includeMdcKeyName>
+        </encoder>
+    </appender>
+
+    <!-- Human-readable console for local development. -->
+    <appender name="text" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%X{request_id:-}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--
+      `console` is an alias for `text`.
+
+      HELIUM_LOG_FORMAT selects an appender *by name*, and logback's failure mode for an
+      unrecognised name is silent: it warns to its own status stream and attaches nothing, so the
+      service runs with no logging whatsoever. That is a genuinely dangerous way to lose an audit
+      trail, so every plausible spelling resolves to a real appender. The `text` appender is
+      always attached as well, which means a typo degrades to "logs twice", never to "no logs".
+    -->
+    <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%X{request_id:-}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="${HELIUM_LOG_LEVEL:-INFO}">
+        <appender-ref ref="${HELIUM_LOG_FORMAT:-text}"/>
+    </root>
+
+    <!-- Hikari logs the full JDBC URL at DEBUG, which can contain a password. -->
+    <logger name="com.zaxxer.hikari" level="INFO"/>
+    <!-- Exposed logs every statement at DEBUG, including bound parameters. -->
+    <logger name="Exposed" level="INFO"/>
+    <logger name="org.jetbrains.exposed" level="INFO"/>
+    <logger name="io.netty" level="WARN"/>
+    <logger name="io.lettuce" level="INFO"/>
+</configuration>

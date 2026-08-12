@@ -1,0 +1,179 @@
+# HeliumID — development stack.
+#
+#   cp .env.dev.example .env.dev
+#   docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
+#
+# `--env-file` is not optional. It is what compose uses for `${...}` interpolation in this file;
+# the `env_file:` entries below are a different mechanism that only populates container
+# environments. Omit the flag and compose falls back to the repository's legacy `./.env`, so the
+# database the postgres container creates and the one the backend connects to can disagree.
+#
+# Everything is reachable on http://localhost:90 and only on http://localhost:90. The SPA, the
+# account API, the OAuth endpoints and the mail sink share one origin, because cookie scope,
+# SameSite, CSRF and the OAuth redirect allowlist are all origin-scoped — a split-port dev setup
+# would quietly test a different security configuration than the one that ships.
+#
+# The database, Redis and the debugger *are* published here, unlike prod. That is the deliberate
+# difference: this file is for a laptop, where being able to point psql and IntelliJ at the stack
+# is worth more than the isolation.
+
+name: helium-id-dev
+
+services:
+
+  # --- edge ------------------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    # The one published port that matters. Host 90 → container 80.
+    ports:
+      - "90:80"
+    volumes:
+      - ./infra/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+    depends_on:
+      backend:
+        condition: service_started
+      frontend:
+        condition: service_started
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:80/_caddy/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # --- application ------------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      target: dev
+    env_file:
+      - .env.dev
+    environment:
+      # Set here rather than in .env.dev so they cannot be edited into an inconsistent state:
+      # these are facts about the compose network, not deployment choices.
+      HELIUM_ENV: dev
+      HELIUM_ROLE: all
+      HELIUM_HTTP_HOST: 0.0.0.0
+      HELIUM_HTTP_PORT: "8080"
+      HELIUM_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-helium}
+      HELIUM_DB_USER: ${POSTGRES_USER:-helium}
+      HELIUM_DB_PASSWORD: ${POSTGRES_PASSWORD:-helium}
+      HELIUM_REDIS_URL: redis://redis:6379/0
+      HELIUM_SMTP_HOST: mailpit
+      HELIUM_SMTP_PORT: "1025"
+      # Mailpit accepts anything and delivers nowhere, so there is no credential and no TLS.
+      HELIUM_SMTP_STARTTLS: "false"
+      # Dev runs Flyway at boot. Production does not — see docker-compose.prod.yml.
+      HELIUM_MIGRATE_ON_START: "true"
+    ports:
+      # JDWP. Attach a debugger to localhost:5005; the process does not wait for one.
+      #
+      # An open JDWP port is unauthenticated remote code execution. It is acceptable exactly here,
+      # bound to a laptop, and it is why `dev` is a separate image target rather than a flag on the
+      # production image — there is no env var that can accidentally turn this on in prod.
+      - "127.0.0.1:${HELIUM_DEBUG_PORT:-5005}:5005"
+      # Direct access to the app, bypassing Caddy. Useful for curl and for seeing what the backend
+      # does *without* forwarded headers. Bound to loopback so it is not exposed on the LAN.
+      #
+      # The host side is configurable because 8080 is a popular port and, on Windows, is often
+      # inside a Hyper-V reserved range — the bind then fails with a permissions error rather than
+      # "address in use", which is a confusing way to lose ten minutes. Set HELIUM_BACKEND_PORT to
+      # move it. Nothing depends on this mapping; the stack is reachable through Caddy on :90.
+      - "127.0.0.1:${HELIUM_BACKEND_PORT:-18080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+
+  # --- SPA ---------------------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    # Source is bind-mounted so edits are picked up by HMR without a rebuild. node_modules is
+    # masked by a named volume: the host copy was installed for Windows, and esbuild/rollup ship
+    # platform-specific binaries that would not run in this container.
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      # The dev server listens on 90 inside the container to match the host port Caddy is
+      # published on, which is what makes HMR work through the proxy without touching
+      # vite.config.ts. See frontend/Dockerfile.
+      CHOKIDAR_USEPOLLING: "true"
+    restart: unless-stopped
+
+  # --- data --------------------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-helium}
+      POSTGRES_USER: ${POSTGRES_USER:-helium}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-helium}
+      # Deterministic collation and encoding. Username and email uniqueness depends on
+      # normalisation the application performs, but a surprise locale still changes index
+      # behaviour and, worse, changes it differently between a laptop and CI.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # Published so psql, IntelliJ and Flyway from the host can reach it. Loopback-bound, and
+      # absent entirely from the production file.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      # `-d` and `-U` matter: without them pg_isready reports the *server* is up while the
+      # application database is still being created by initdb, and the backend races it.
+      # `$$` escapes compose interpolation, so these expand inside the container from the very
+      # variables the server was initialised with.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # No persistence in dev. Redis holds rate-limit windows and short-lived security transactions
+    # only; CLAUDE.md requires correctness not to depend on it surviving, so losing it on restart
+    # is a feature — it means that invariant is exercised every day.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # --- mail --------------------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:latest
+    environment:
+      # Serve the UI under /mail so Caddy can expose it on the shared origin without rewriting
+      # asset URLs.
+      MP_WEBROOT: mail
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+      MP_MAX_MESSAGES: "500"
+    ports:
+      # http://localhost:8025 as well as http://localhost:90/mail — the direct port is handy when
+      # Caddy is the thing you are debugging.
+      - "127.0.0.1:8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  frontend_node_modules:

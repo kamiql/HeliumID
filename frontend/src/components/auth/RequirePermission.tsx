@@ -1,24 +1,26 @@
-import {Navigate, Outlet} from "react-router";
-import {useUserRoles} from "../../hooks/useUserRoles.ts";
+import { Navigate, Outlet } from "react-router"
+import { usePermissions } from "../../hooks/usePermissions.ts"
 
+/**
+ * Route guard on the effective permission set from the session payload.
+ *
+ * This only removes routes from the UI. Every endpoint behind them re-checks the same
+ * permission server-side, so bypassing this guard buys an attacker nothing.
+ */
 export default function RequirePermission({
-                                              require,
-                                              all = false,
-                                          }: {
-    require: string[];
-    all?: boolean;
+    require,
+    all = false,
+}: {
+    require: string[]
+    all?: boolean
 }) {
-    const roles = useUserRoles();
+    const permissions = usePermissions()
 
-    const permissions = roles.flatMap((role) => role.permissions);
+    const allowed = all ? permissions.hasAll(require) : permissions.hasAny(require)
 
-    const hasPermission = all
-        ? require.every((permission) => permissions.includes(permission))
-        : require.some((permission) => permissions.includes(permission));
-
-    if (!hasPermission) {
-        return <Navigate to="/" replace/>;
+    if (!allowed) {
+        return <Navigate to="/" replace />
     }
 
-    return <Outlet/>;
+    return <Outlet />
 }

@@ -7,22 +7,12 @@ import {
     Toolbar,
     Typography,
 } from "@mui/material"
-import { Outlet } from "react-router"
+import { Link, Outlet } from "react-router"
 import { useRequestStore } from "../../stores/request.store.ts"
-import ThemeToggle from "./ThemeToggle.tsx";
-import {useRoleStore} from "../../stores/role.store.ts";
-import {useEffect} from "react";
+import ThemeToggle from "./ThemeToggle.tsx"
 
 export default function Layout() {
-    const activeRequests = useRequestStore(
-        (state) => state.activeRequests,
-    )
-
-    const initializeRoles = useRoleStore((state) => state.initialize)
-
-    useEffect(() => {
-        void initializeRoles()
-    }, [initializeRoles])
+    const activeRequests = useRequestStore((state) => state.activeRequests)
 
     return (
         <Box
@@ -49,15 +39,18 @@ export default function Layout() {
                         }}
                     >
                         <Typography
+                            component={Link}
+                            to="/"
                             sx={{
                                 fontFamily: "Silkscreen, sans-serif",
                                 fontSize: "1.4rem",
                                 color: "text.primary",
+                                textDecoration: "none",
                             }}
                         >
                             HeliumID
                         </Typography>
-                        <ThemeToggle/>
+                        <ThemeToggle />
                     </Toolbar>
                 </Container>
             </AppBar>

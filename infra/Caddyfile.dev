@@ -1,0 +1,96 @@
+# HeliumID — development edge.
+#
+# Everything the stack exposes lives behind this one origin, http://localhost:90. That is not
+# convenience: cookies, CORS, CSRF and the OAuth redirect allowlist are all origin-scoped, so a
+# dev setup that splits the SPA onto :5173 and the API onto :8080 exercises a completely different
+# security configuration than the one you ship. Same-origin here means the `__Host-`/SameSite/
+# double-submit machinery is tested the way production tests it.
+#
+# The site address is `:80` inside the container; compose publishes it as host port 90.
+{
+	# Terse logs at the edge. The interesting request log is the backend's structured one, which
+	# already carries request_id, event_type and outcome (concept §7.5).
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+	# No TLS in dev: plain HTTP on localhost, and an automatic-HTTPS attempt against `localhost:90`
+	# would only produce certificate noise.
+	auto_https off
+}
+
+# X-Forwarded-For handling, shared by every backend route.
+#
+# Caddy *appends* the peer address to any inbound X-Forwarded-For. The backend reads the leftmost
+# entry as the client IP (the correct reading of the header) and keys its brute-force and rate
+# limits on it — so an inbound `X-Forwarded-For: 1.2.3.4` would hand an attacker a fresh identity
+# per request. Overwriting the header with the real peer makes this proxy the only thing that can
+# set it. The backend only consults it at all when HELIUM_TRUST_FORWARDED_HEADERS=true.
+(forwarded) {
+	header_up X-Forwarded-For {remote_host}
+	header_up X-Real-IP {remote_host}
+}
+
+:80 {
+	# Liveness for the caddy container itself. Answered here rather than proxied, so the edge's
+	# healthcheck reports on the edge and not on the backend behind it.
+	respond /_caddy/health 200
+
+	# --- backend --------------------------------------------------------------------------
+	#
+	# The backend mounts its account API at /v1 and its protocol endpoints at the root, which is
+	# where the specs require them. `handle_path` strips the /api prefix so the SPA can call
+	# /api/v1/... while the server still sees /v1/...; the protocol paths are proxied verbatim,
+	# because a discovery document advertising /api/oauth2/authorize would simply be wrong.
+	handle_path /api/* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /oauth2/* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /.well-known/* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /userinfo* {
+		reverse_proxy backend:8080 {
+			import forwarded
+		}
+	}
+
+	handle /health {
+		reverse_proxy backend:8080
+	}
+
+	# Prometheus scrape endpoint. Reachable in dev because you want to look at it; the prod
+	# Caddyfile blocks it, and that difference is deliberate.
+	handle /metrics* {
+		reverse_proxy backend:8080
+	}
+
+	# --- mail sink ------------------------------------------------------------------------
+	#
+	# Mailpit's web UI. MP_WEBROOT=mail makes Mailpit generate its own asset links under /mail, so
+	# the path is passed through unstripped rather than rewritten.
+	handle /mail* {
+		reverse_proxy mailpit:8025
+	}
+
+	# --- SPA ------------------------------------------------------------------------------
+	#
+	# Catch-all to the Vite dev server. Caddy upgrades websockets transparently, so HMR works as
+	# long as client and server agree on a port — which they do, because the dev server listens on
+	# 90 inside its container and the browser is talking to host port 90.
+	handle {
+		reverse_proxy frontend:90
+	}
+}

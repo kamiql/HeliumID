@@ -9,101 +9,114 @@ import {
     Stack,
     Typography,
 } from "@mui/material"
-import {useState} from "react"
-import axios from "axios"
-import {useUser} from "../../../../hooks/useUser.ts"
-import {useAuthStore} from "../../../../stores/auth.store.ts"
-import {userApi} from "../../../../api/user.ts"
+import { QRCodeSVG } from "qrcode.react"
+import { useEffect, useState } from "react"
+import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx"
+import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx"
 import OtpInput from "../../../../components/OtpInput.tsx"
-import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx";
-import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx";
+import PasswordField from "../../../../components/PasswordField.tsx"
+import CopyButton from "../../../../components/CopyButton.tsx"
+import ErrorAlert from "../../../../components/ErrorAlert.tsx"
+import OneTimeSecretDialog from "../../../../components/OneTimeSecretDialog.tsx"
+import { useUser } from "../../../../hooks/useUser.ts"
+import { useAuthStore } from "../../../../stores/auth.store.ts"
+import { accountApi } from "../../../../api/account.ts"
+import { toHeliumError } from "../../../../api/problem.ts"
+import { notify } from "../../../../stores/notice.store.ts"
+import type { MfaFactor, TotpEnrollment } from "../../../../api/types.ts"
 
+/**
+ * TOTP enrollment.
+ *
+ * The QR code is rendered locally from the `otpauth_uri` the server returns. Round-tripping the
+ * secret through an external QR service would hand the shared secret to a third party, so the
+ * code is drawn client-side and the URI never leaves the browser.
+ */
 export default function TotpBox() {
     const user = useUser()
-    const initialize = useAuthStore((state) => state.initialize)
+    const refresh = useAuthStore((state) => state.refresh)
 
-    const [open, setOpen] = useState(false)
-    const [disableOpen, setDisableOpen] = useState(false)
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState("")
-
-    const [qrCode, setQrCode] = useState("")
+    const [factors, setFactors] = useState<MfaFactor[]>([])
+    const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null)
     const [code, setCode] = useState("")
-    const [disableCode, setDisableCode] = useState("")
+    const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null)
 
-    const handleSetup = async () => {
+    const [disableOpen, setDisableOpen] = useState(false)
+    const [password, setPassword] = useState("")
+
+    const [loading, setLoading] = useState(false)
+    const [error, setError] = useState<unknown>(null)
+
+    const activeTotp = factors.find((factor) => factor.type === "totp" && factor.status === "ACTIVE")
+
+    const loadFactors = () => {
+        accountApi
+            .factors()
+            .then(({ data }) => setFactors(data))
+            .catch(() => setFactors([]))
+    }
+
+    useEffect(loadFactors, [])
+
+    const handleEnroll = async () => {
         try {
             setLoading(true)
-            setError("")
-
-            const response = await userApi.setupTotp()
-
-            setQrCode(response.data.qrCode)
+            setError(null)
+            const { data } = await accountApi.enrollTotp()
+            setEnrollment(data)
             setCode("")
-            setOpen(true)
-        } catch {
-            setError("Failed to setup two-factor authentication")
+        } catch (caught) {
+            setError(caught)
         } finally {
             setLoading(false)
         }
     }
 
-    const handleEnable = async (value = code) => {
-        if (value.length !== 6 || loading) return
+    const handleConfirm = async (value = code) => {
+        if (!enrollment || value.length !== 6 || loading) return
 
         try {
             setLoading(true)
-            setError("")
+            setError(null)
 
-            await userApi.enableTotp({
+            const { data } = await accountApi.confirmTotp({
+                factor_id: enrollment.factor_id,
                 code: value,
             })
 
-            setOpen(false)
+            setEnrollment(null)
             setCode("")
-            setQrCode("")
-
-            await initialize()
-        } catch (error) {
-            if (
-                axios.isAxiosError(error) &&
-                error.response?.status === 401
-            ) {
-                setError("Invalid authentication code")
-                return
-            }
-
-            setError("Failed to enable two-factor authentication")
+            // Recovery codes come back exactly once, here and nowhere else.
+            setRecoveryCodes(data.codes)
+            loadFactors()
+            void refresh()
+        } catch (caught) {
+            setCode("")
+            setError(caught)
         } finally {
             setLoading(false)
         }
     }
 
-    const handleDisable = async (value = disableCode) => {
-        if (value.length !== 6 || loading) return
+    const handleDisable = async () => {
+        if (!activeTotp) return
 
         try {
             setLoading(true)
-            setError("")
+            setError(null)
 
-            await userApi.disableTotp({
-                code: value,
+            await accountApi.disableTotp({
+                factor_id: activeTotp.id,
+                current_password: password || null,
             })
 
             setDisableOpen(false)
-            setDisableCode("")
-
-            await initialize()
-        } catch (error) {
-            if (
-                axios.isAxiosError(error) &&
-                error.response?.status === 401
-            ) {
-                setError("Invalid authentication code")
-                return
-            }
-
-            setError("Failed to disable two-factor authentication")
+            setPassword("")
+            loadFactors()
+            void refresh()
+            notify("Two-factor authentication disabled.", "warning")
+        } catch (caught) {
+            setError(toHeliumError(caught))
         } finally {
             setLoading(false)
         }
@@ -113,42 +126,32 @@ export default function TotpBox() {
         <>
             <AccountBox
                 title="Two-factor authentication"
-                description="Protect your account with an authenticator app."
+                description="Protect your account with a time-based code from an authenticator app."
                 requirements={[
                     {
                         id: "email",
                         label: "Email verification required",
-                        satisfied: user.emailVerified || user.totpEnabled,
+                        satisfied: user.email_verified || user.mfa_enabled,
                     },
                 ]}
-                sx={{
-                    flex: "1 1 100%",
-                }}
+                sx={{ flex: "1 1 100%" }}
             >
                 <Chip
-                    label={
-                        user.totpEnabled
-                            ? "Enabled"
-                            : "Not enabled"
-                    }
-                    color={
-                        user.totpEnabled
-                            ? "success"
-                            : "warning"
-                    }
+                    label={user.mfa_enabled ? "Enabled" : "Not enabled"}
+                    color={user.mfa_enabled ? "success" : "warning"}
                     variant="outlined"
-                    sx={{
-                        width: "fit-content",
-                    }}
+                    sx={{ width: "fit-content" }}
                 />
 
-                {user.totpEnabled ? (
+                {error !== null && !enrollment && !disableOpen && <ErrorAlert error={error} />}
+
+                {activeTotp ? (
                     <AccountButton
                         variant="outlined"
                         color="error"
                         onClick={() => {
-                            setError("")
-                            setDisableCode("")
+                            setError(null)
+                            setPassword("")
                             setDisableOpen(true)
                         }}
                     >
@@ -157,77 +160,101 @@ export default function TotpBox() {
                 ) : (
                     <AccountButton
                         variant="outlined"
-                        onClick={handleSetup}
+                        onClick={() => void handleEnroll()}
                         disabled={loading}
                     >
-                        Setup two-factor authentication
+                        Set up two-factor authentication
                     </AccountButton>
                 )}
             </AccountBox>
 
             <Dialog
-                open={open}
+                open={enrollment !== null}
                 onClose={() => {
                     if (loading) return
-
-                    setOpen(false)
-                    setError("")
+                    setEnrollment(null)
                     setCode("")
-                    setQrCode("")
+                    setError(null)
                 }}
                 fullWidth
                 maxWidth="xs"
             >
-                <DialogTitle>
-                    Setup two-factor authentication
-                </DialogTitle>
+                <DialogTitle>Set up two-factor authentication</DialogTitle>
 
                 <DialogContent>
                     <Stack spacing={2}>
                         <Typography variant="body2">
-                            Scan this QR code with your authenticator app and enter the generated code.
+                            Scan this code with your authenticator app, then enter the six digits
+                            it shows.
                         </Typography>
 
-                        {qrCode && (
-                            <Box
-                                component="img"
-                                src={qrCode}
-                                alt="TOTP QR code"
-                                sx={{
-                                    width: 220,
-                                    height: 220,
-                                    mx: "auto",
-                                }}
-                            />
+                        {enrollment && (
+                            <>
+                                <Box
+                                    sx={{
+                                        mx: "auto",
+                                        p: 2,
+                                        // A white quiet zone regardless of theme: scanners need
+                                        // the contrast, and the dark palette would break them.
+                                        backgroundColor: "#FFFFFF",
+                                        borderRadius: 2,
+                                        lineHeight: 0,
+                                    }}
+                                >
+                                    <QRCodeSVG
+                                        value={enrollment.otpauth_uri}
+                                        size={200}
+                                        level="M"
+                                        marginSize={0}
+                                    />
+                                </Box>
+
+                                <Box>
+                                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                        Can&apos;t scan? Enter this key manually
+                                    </Typography>
+
+                                    <Stack
+                                        direction="row"
+                                        spacing={1}
+                                        sx={{ alignItems: "center", mt: 0.5 }}
+                                    >
+                                        <Typography
+                                            sx={{
+                                                fontFamily: "monospace",
+                                                wordBreak: "break-all",
+                                                flex: 1,
+                                            }}
+                                        >
+                                            {enrollment.secret}
+                                        </Typography>
+
+                                        <CopyButton value={enrollment.secret} iconOnly />
+                                    </Stack>
+                                </Box>
+                            </>
                         )}
 
                         <OtpInput
                             value={code}
                             onChange={(value) => {
                                 setCode(value)
-                                setError("")
-
-                                if (value.length === 6) {
-                                    void handleEnable(value)
-                                }
+                                setError(null)
+                                if (value.length === 6) void handleConfirm(value)
                             }}
                             autoFocus
                         />
 
-                        {error && (
-                            <Typography
-                                color="error"
-                                variant="body2"
-                            >
-                                {error}
-                            </Typography>
-                        )}
+                        {error !== null && <ErrorAlert error={error} />}
                     </Stack>
                 </DialogContent>
 
                 <DialogActions>
                     <AccountButton
-                        onClick={() => setOpen(false)}
+                        onClick={() => {
+                            setEnrollment(null)
+                            setCode("")
+                        }}
                         disabled={loading}
                     >
                         Cancel
@@ -235,11 +262,8 @@ export default function TotpBox() {
 
                     <AccountButton
                         variant="contained"
-                        onClick={() => void handleEnable()}
-                        disabled={
-                            loading ||
-                            code.length !== 6
-                        }
+                        onClick={() => void handleConfirm()}
+                        disabled={loading || code.length !== 6}
                     >
                         Enable
                     </AccountButton>
@@ -250,53 +274,39 @@ export default function TotpBox() {
                 open={disableOpen}
                 onClose={() => {
                     if (loading) return
-
                     setDisableOpen(false)
-                    setDisableCode("")
-                    setError("")
+                    setError(null)
                 }}
                 fullWidth
                 maxWidth="xs"
             >
-                <DialogTitle>
-                    Disable two-factor authentication
-                </DialogTitle>
+                <DialogTitle>Disable two-factor authentication</DialogTitle>
 
                 <DialogContent>
-                    <Stack spacing={2}>
+                    <Stack spacing={2} sx={{ mt: 1 }}>
                         <Alert severity="warning">
-                            Enter your current authenticator code to disable two-factor authentication.
+                            Your account will be protected by your password alone. Existing
+                            recovery codes stop working.
                         </Alert>
 
-                        <OtpInput
-                            value={disableCode}
-                            onChange={(value) => {
-                                setDisableCode(value)
-                                setError("")
-
-                                if (value.length === 6) {
-                                    void handleDisable(value)
-                                }
-                            }}
+                        <PasswordField
+                            fullWidth
                             autoFocus
+                            label="Current password"
+                            autoComplete="current-password"
+                            value={password}
+                            onType={(value) => {
+                                setPassword(value)
+                                setError(null)
+                            }}
                         />
 
-                        {error && (
-                            <Typography
-                                color="error"
-                                variant="body2"
-                            >
-                                {error}
-                            </Typography>
-                        )}
+                        {error !== null && <ErrorAlert error={error} />}
                     </Stack>
                 </DialogContent>
 
                 <DialogActions>
-                    <AccountButton
-                        onClick={() => setDisableOpen(false)}
-                        disabled={loading}
-                    >
+                    <AccountButton onClick={() => setDisableOpen(false)} disabled={loading}>
                         Cancel
                     </AccountButton>
 
@@ -304,15 +314,24 @@ export default function TotpBox() {
                         variant="contained"
                         color="error"
                         onClick={() => void handleDisable()}
-                        disabled={
-                            loading ||
-                            disableCode.length !== 6
-                        }
+                        disabled={loading}
                     >
                         Disable
                     </AccountButton>
                 </DialogActions>
             </Dialog>
+
+            <OneTimeSecretDialog
+                open={recoveryCodes !== null}
+                title="Save your recovery codes"
+                description="Each code signs you in once if you lose your authenticator app. Store them somewhere other than the device running the app."
+                values={recoveryCodes ?? []}
+                downloadFileName="helium-recovery-codes.txt"
+                onClose={() => {
+                    setRecoveryCodes(null)
+                    notify("Two-factor authentication enabled.", "success")
+                }}
+            />
         </>
     )
 }

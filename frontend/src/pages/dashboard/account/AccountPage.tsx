@@ -1,40 +1,30 @@
-import {
-    Alert,
-    Box,
-    Typography,
-} from "@mui/material"
-import {useUser} from "../../../hooks/useUser.ts"
-import PersonalInformationBox from "./boxes/PersonalInformationBox.tsx"
+import { Alert, Box, Typography } from "@mui/material"
+import { useUser } from "../../../hooks/useUser.ts"
+import AccountBoxList, {
+    type AccountBoxDefinition,
+} from "../../../components/dashboard/account/AccountBoxList.tsx"
+import ProfileBox from "./boxes/ProfileBox.tsx"
+import EmailBox from "./boxes/EmailBox.tsx"
 import PasswordBox from "./boxes/PasswordBox.tsx"
-import EmailVerificationBox from "./boxes/EmailVerificationBox.tsx"
-import ConnectedAccountsBox from "./boxes/ConnectedAccountsBox.tsx"
 import TotpBox from "./boxes/TotpBox.tsx"
+import RecoveryCodesBox from "./boxes/RecoveryCodesBox.tsx"
+import LinkedProvidersBox from "./boxes/LinkedProvidersBox.tsx"
+import SessionsBox from "./boxes/SessionsBox.tsx"
 import DangerZoneBox from "./boxes/DangerZoneBox.tsx"
-import AccountBoxList, {type AccountBoxDefinition} from "../../../components/dashboard/account/AccountBoxList.tsx";
+
+const boxes: AccountBoxDefinition[] = [
+    { component: ProfileBox },
+    { component: EmailBox },
+    { component: PasswordBox },
+    { component: TotpBox },
+    { component: RecoveryCodesBox },
+    { component: LinkedProvidersBox },
+    { component: SessionsBox },
+    { component: DangerZoneBox },
+]
 
 export default function AccountPage() {
     const user = useUser()
-
-    const boxes: AccountBoxDefinition[] = [
-        {
-            component: PersonalInformationBox,
-        },
-        {
-            component: PasswordBox,
-        },
-        {
-            component: EmailVerificationBox,
-        },
-        {
-            component: ConnectedAccountsBox,
-        },
-        {
-            component: TotpBox,
-        },
-        {
-            component: DangerZoneBox,
-        },
-    ]
 
     return (
         <Box
@@ -49,7 +39,7 @@ export default function AccountPage() {
                 minWidth: 0,
             }}
         >
-            {!user.emailVerified && (
+            {!user.email_verified && (
                 <Alert
                     severity="warning"
                     sx={{
@@ -60,7 +50,7 @@ export default function AccountPage() {
                 </Alert>
             )}
 
-            <Box sx={{mb: 4}}>
+            <Box sx={{ mb: 4 }}>
                 <Typography
                     variant="h4"
                     sx={{
@@ -87,7 +77,7 @@ export default function AccountPage() {
                     gap: 3,
                 }}
             >
-                <AccountBoxList boxes={boxes}/>
+                <AccountBoxList boxes={boxes} />
             </Box>
         </Box>
     )

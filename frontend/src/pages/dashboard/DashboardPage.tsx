@@ -29,7 +29,7 @@ import {useAuthStore} from "../../stores/auth.store";
 import {useUser} from "../../hooks/useUser";
 import {DashboardComponents, type DashboardComponent} from "./DashboardComponents.ts";
 import {useConfirm} from "../../hooks/useConfirm.ts";
-import {useUserRoles} from "../../hooks/useUserRoles.ts";
+import {usePermissions} from "../../hooks/usePermissions.ts";
 
 const drawerWidth = 250;
 
@@ -39,21 +39,21 @@ export default function DashboardPage() {
     const [mobileOpen, setMobileOpen] = useState(false);
     const [expanded, setExpanded] = useState<string[]>([]);
     const user = useUser();
-    const roles = useUserRoles();
+    const permissions = usePermissions();
     const logout = useAuthStore((state) => state.logout);
     const navigate = useNavigate();
     const location = useLocation();
     const {confirm} = useConfirm();
 
-    const permissions = roles.flatMap((role) => role.permissions);
-
+    // Effective permissions come flattened on the session payload; the drawer only hides
+    // entries, every endpoint behind them re-checks the same permission server-side.
     const hasPermission = (
         require: string[],
         all = false
     ) =>
         all
-            ? require.every((permission) => permissions.includes(permission))
-            : require.some((permission) => permissions.includes(permission));
+            ? permissions.hasAll(require)
+            : permissions.hasAny(require);
 
     const canAccess = (component: DashboardComponent) =>
         !component.require ||
@@ -72,8 +72,10 @@ export default function DashboardPage() {
         navigate("/login");
     };
 
+    // Nested routes such as /admin/users/:id keep their parent entry highlighted.
     const isSelected = (path: string) =>
-        location.pathname === path;
+        location.pathname === path ||
+        (path !== "/" && location.pathname.startsWith(`${path}/`));
 
     const hasActiveChild = (component: DashboardComponent) =>
         component.children?.some(
@@ -82,6 +84,15 @@ export default function DashboardPage() {
                 child.path !== undefined &&
                 isSelected(child.path)
         ) ?? false;
+
+    // First and last name are optional on the wire, so fall back to the username.
+    const displayName =
+        [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username;
+    const initials =
+        ([user.firstName, user.lastName]
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase())
+            .join("") || user.username.charAt(0).toUpperCase());
 
     const toggleExpanded = (name: string) => {
         setExpanded((current) =>
@@ -228,8 +239,7 @@ export default function DashboardPage() {
                                 fontWeight: 600,
                             }}
                         >
-                            {user.firstName.charAt(0).toUpperCase()}
-                            {user.lastName.charAt(0).toUpperCase()}
+                            {initials}
                         </Avatar>
 
                         <Stack sx={{minWidth: 0}}>
@@ -241,7 +251,7 @@ export default function DashboardPage() {
                                     lineHeight: 1.3,
                                 }}
                             >
-                                {user.firstName} {user.lastName}
+                                {displayName}
                             </Typography>
 
                             <Typography
@@ -298,8 +308,8 @@ export default function DashboardPage() {
                         <Menu/>
                     </IconButton>
 
-                    <Typography sx={{ml: 2, fontWeight: 700}}>
-                        ID Service
+                    <Typography sx={{ml: 2, fontFamily: "Silkscreen, sans-serif"}}>
+                        HeliumID
                     </Typography>
                 </Toolbar>
             </AppBar>

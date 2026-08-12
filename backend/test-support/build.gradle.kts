@@ -1,0 +1,15 @@
+dependencies {
+    api(project(":auth-domain"))
+    api(project(":flow-engine"))
+    api(project(":persistence-postgres"))
+    api(platform(rootProject.libs.junit.bom))
+    api(rootProject.libs.junit.jupiter)
+    api(rootProject.libs.testcontainers.junit)
+    api(rootProject.libs.testcontainers.postgresql)
+    api(rootProject.libs.exposed.core)
+    api(rootProject.libs.exposed.jdbc)
+    api(rootProject.libs.hikari)
+    api(rootProject.libs.postgresql)
+    api(rootProject.libs.flyway.core)
+    api(rootProject.libs.flyway.postgresql)
+}

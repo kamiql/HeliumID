@@ -1,0 +1,46 @@
+# Line-ending policy.
+#
+# This repository is developed on Windows and built inside Linux containers, which is exactly the
+# combination that produces the failure this file prevents: a `gradlew` checked out with CRLF has
+# the shebang `#!/bin/sh\r`, and Linux reports `./gradlew: not found` — a message that points at
+# the file rather than at its line endings, and costs an afternoon the first time you meet it.
+#
+# Anything a Linux process executes or parses must be LF, regardless of the developer's platform.
+
+* text=auto
+
+# Scripts and shell-adjacent files: always LF, never converted on checkout.
+gradlew         text eol=lf
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+Caddyfile*      text eol=lf
+.env.*.example  text eol=lf
+
+# Windows-only launchers: always CRLF, for the same reason in reverse.
+gradlew.bat     text eol=crlf
+*.cmd           text eol=crlf
+
+# Sources are LF so a diff never shows a whole file as changed after a checkout on another OS.
+*.kt            text eol=lf
+*.kts           text eol=lf
+*.java          text eol=lf
+*.sql           text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.ts            text eol=lf
+*.tsx           text eol=lf
+*.css           text eol=lf
+*.html          text eol=lf
+*.toml          text eol=lf
+*.properties    text eol=lf
+*.xml           text eol=lf
+
+# Binary: never touched.
+*.jar           binary
+*.png           binary
+*.jpg           binary
+*.pdf           binary
+*.ico           binary

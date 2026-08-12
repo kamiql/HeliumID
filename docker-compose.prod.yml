@@ -1,0 +1,273 @@
+# HeliumID — production stack.
+#
+#   cp .env.prod.example .env.prod        # then fill it from your secret manager
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#
+# `--env-file` is not optional: it is what compose uses for `${...}` interpolation here. The
+# `env_file:` entries are the separate mechanism that populates container environments.
+#
+# Reachable on host port 90, same as dev, so the two files differ in security posture rather than
+# in shape. What actually differs:
+#
+#   * no published database or cache ports — Postgres and Redis are reachable only on the compose
+#     network, so a firewall mistake cannot expose them;
+#   * the backend runs as a non-root user from the `prod` image target, with no debugger;
+#   * migrations do not run at boot (see HELIUM_MIGRATE_ON_START below);
+#   * outbox delivery runs in its own container, so a slow SMTP server cannot consume request
+#     threads;
+#   * every service has a healthcheck, a restart policy and a resource ceiling.
+#
+# This file assumes TLS terminates in front of it. See infra/Caddyfile.prod.
+#
+# `.env.prod` is a stopgap. Concept §7.1 is explicit that production secrets belong in a secret
+# manager, not in a file on the host — wire this to Vault/KMS/Secrets Manager before it holds
+# anything real.
+
+name: helium-id
+
+# Anchors, so a limit or a logging policy is changed in one place rather than six.
+x-logging: &logging
+  driver: json-file
+  options:
+    # Unbounded container logs fill the disk, and on an identity provider the disk filling up
+    # means audit records stop being written.
+    max-size: "20m"
+    max-file: "5"
+
+x-backend-env: &backend-env
+  HELIUM_ENV: prod
+  HELIUM_HTTP_HOST: 0.0.0.0
+  HELIUM_HTTP_PORT: "8080"
+  HELIUM_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-helium}
+  HELIUM_DB_USER: ${POSTGRES_USER:-helium}
+  HELIUM_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  HELIUM_REDIS_URL: redis://redis:6379/0
+  # The edge overwrites X-Forwarded-For with the real peer (infra/Caddyfile.prod), so the backend
+  # can trust it. Setting this true without a proxy that sanitises the header would let any caller
+  # forge the IP every rate limit is keyed on.
+  HELIUM_TRUST_FORWARDED_HEADERS: "true"
+  # Non-negotiable in production: `false` also drops the `__Host-` cookie prefix, and the backend
+  # refuses to start in that combination.
+  HELIUM_SECURE_COOKIES: "true"
+  # Migrations are a gated release step, not a side effect of a container restarting (concept
+  # §3.4). Three replicas coming up after a crash would otherwise race Flyway's lock, and an
+  # expand-and-contract migration needs to land *between* two deploys by definition. Run them
+  # deliberately:
+  #
+  #   docker compose --env-file .env.prod -f docker-compose.prod.yml \
+  #     run --rm -e HELIUM_MIGRATE_ON_START=true -e HELIUM_ROLE=migrate backend
+  #
+  # See docs/operations.md.
+  HELIUM_MIGRATE_ON_START: "false"
+
+services:
+
+  # --- edge ------------------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "90:80"
+    volumes:
+      - ./infra/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      # Read-only: the edge serves the bundle and has no business writing to it.
+      - frontend_dist:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend-assets:
+        # Caddy must not start before the bundle exists, or the first requests after a deploy get
+        # a 404 from an empty /srv.
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:80/_caddy/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+        reservations:
+          memory: 64M
+
+  # --- application ------------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      target: prod
+    image: helium-id:${HELIUM_VERSION:-latest}
+    env_file:
+      - .env.prod
+    environment:
+      <<: *backend-env
+      # Serves HTTP and runs the interactive flows. Background delivery belongs to the worker.
+      HELIUM_ROLE: api
+    # `expose`, not `ports`. The backend is only reachable through Caddy, which is where the
+    # forwarded-header sanitising and the security response headers live — a published 8080 would
+    # be a way around both.
+    expose:
+      - "8080"
+    # No `healthcheck:` block: the one baked into the image (backend/Dockerfile) applies, so the
+    # probe travels with the artifact and cannot drift away from what the app actually exposes.
+    # `depends_on: condition: service_healthy` below reads it just the same.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          # Argon2id is deliberately memory-hard: at 64 MiB per hash, concurrent logins are the
+          # dominant term in this container's footprint. Raise the limit *and* re-benchmark
+          # HELIUM_ARGON2_MEMORY_KIB together — tuning one without the other is how you get an
+          # OOM kill under a credential-stuffing burst.
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # Outbox delivery, retries and scheduled cleanup.
+  #
+  # A separate container rather than a thread pool in the API process, for two reasons that both
+  # matter under load: SMTP and webhook latency cannot starve request handling, and the worker can
+  # be scaled, restarted or paused during an incident without taking logins down with it.
+  worker:
+    build:
+      context: ./backend
+      target: prod
+    image: helium-id:${HELIUM_VERSION:-latest}
+    env_file:
+      - .env.prod
+    environment:
+      <<: *backend-env
+      HELIUM_ROLE: worker
+    # The worker still binds 8080 purely so the image's HEALTHCHECK has something to hit. A
+    # background process with no readiness signal is a process you cannot tell apart from a hung
+    # one, which is the wrong property for the component that delivers verification mail.
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # --- SPA assets ---------------------------------------------------------------------------------
+  #
+  # One-shot. Builds the bundle inside Docker, copies it into the volume Caddy serves, exits.
+  #
+  # Building here rather than bind-mounting a host `frontend/dist` means production can never be
+  # serving whatever a developer last compiled locally, and the deploy host needs no Node
+  # toolchain.
+  frontend-assets:
+    build:
+      context: ./frontend
+      target: prod
+    image: helium-id-frontend:${HELIUM_VERSION:-latest}
+    volumes:
+      - frontend_dist:/srv
+    # Not `unless-stopped`: this container is supposed to exit 0. Restarting it in a loop would
+    # rewrite the asset directory under a running Caddy.
+    restart: "no"
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  # --- data ----------------------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-helium}
+      POSTGRES_USER: ${POSTGRES_USER:-helium}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # No `ports:`. PostgreSQL holds every password hash, refresh-token hash, encrypted TOTP secret
+    # and audit record in the system; it is reachable from the backend and the worker on the
+    # compose network and from nowhere else. Use `docker compose exec postgres psql` for
+    # operations, and a tunnel — never a published port — if you need a client.
+    expose:
+      - "5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      # `$$` escapes compose interpolation, so these expand inside the container from the very
+      # variables the server was initialised with. Interpolating them here instead would let the
+      # probe check a different database than the one that exists.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    # Persistence off on purpose. Redis holds rate-limit windows and short-lived security
+    # transactions; CLAUDE.md requires correctness not to depend on it, so an RDB snapshot would
+    # add restore complexity and a file full of security state on disk in exchange for nothing.
+    #
+    # `maxmemory-policy allkeys-lru` and not `noeviction`: under memory pressure, dropping the
+    # oldest rate-limit windows degrades gracefully, whereas write failures would make every
+    # limiter fail and take login with it.
+    command:
+      - "redis-server"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "256mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 320M
+        reservations:
+          memory: 64M
+
+volumes:
+  pg_data:
+  frontend_dist:
+  caddy_data:
+  caddy_config:

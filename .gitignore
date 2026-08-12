@@ -30,3 +30,41 @@ build
 # OS
 .DS_Store
 Thumbs.db
+
+# --- deployment ------------------------------------------------------------
+#
+# Real environment files. The committed `.example` files hold placeholders only; these hold the
+# database password, the data-encryption keys, the token HMAC key and every OAuth client secret.
+.env.dev
+.env.prod
+.env.local
+.env.*.local
+**/.env.*
+!**/.env.dev.example
+!**/.env.prod.example
+
+# Key material, however it got here. There is no legitimate reason for any of these to be in the
+# repository, and the point of the pattern is to catch the illegitimate ones.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Local compose overrides. `docker-compose.override.yml` is loaded automatically by
+# `docker compose`, which makes it a very effective way to commit someone's laptop-specific
+# port bindings to everyone else.
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# Container state that lands in the working tree rather than in a named volume.
+/infra/caddy_data
+/infra/caddy_config
+/infra/pgdata
+
+# Database dumps. These contain password hashes, encrypted TOTP secrets and the full audit log —
+# see docs/operations.md §3.
+*.dump
+*.dump.age
+*.sql.gz
