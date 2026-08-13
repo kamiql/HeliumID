@@ -22,7 +22,9 @@ Ranked by what an attacker gains, not by how much code touches them.
 | Token HMAC key (`HELIUM_TOKEN_HMAC_KEY`) | Secret manager / process environment | Refresh tokens, session handles, reset and verification tokens are stored as HMACs. With the key, a database dump becomes a set of usable credentials. |
 | Password hashes and the pepper | `credentials`, secret manager | Offline cracking; credential reuse against other services. |
 | TOTP secrets and recovery codes | `mfa_factors`, encrypted / hashed | Defeats the second factor, which is the control every recovery flow leans on. |
+| Passkey public keys and credential ids | `webauthn_credentials`, plaintext | Deliberately *not* an asset in the same sense. The private key never leaves the authenticator, so a full dump lets an attacker verify signatures, never produce them. What has to be protected is the relying-party *configuration*, not the rows — see "Real-time phishing and MFA relay" in §3. |
 | Refresh tokens and session handles | `sessions`, `refresh_tokens` (hashed) | Long-lived authentication. |
+| Trusted-device tokens | `trusted_devices` (hashed) | Waives the MFA challenge at login for the configured window. Weaker than a session handle — it still requires the password — but it is the one credential that lowers authentication assurance. |
 | Client secrets | `oauth_clients` (hashed) | Impersonating a confidential client; obtaining tokens for its scopes. |
 | Audit log | `audit_events` | The record of what happened. An attacker who can edit it can erase the incident. |
 | PII: email addresses, usernames, IPs, user agents | `users`, `sessions`, `audit_events` | Disclosure and enumeration harm independent of account compromise. |
@@ -73,6 +75,43 @@ each guess expensive by design. Layered limits (concept §4.6): per identifier, 
 with progressive delays and account lockout thresholds. Limits live in Redis so they hold across
 instances, with an in-memory fallback that fails *closed* per instance rather than disabling the
 limit. `auth_login_failures_total` and `rate_limit_rejections_total` make the attempt visible.
+
+**Real-time phishing and MFA relay.** A password plus a TOTP code can both be relayed: the attacker
+puts up a convincing page, the user types both, and the attacker replays them within the code's
+window. Nothing about TOTP prevents this, because the user is the transport. Passkeys are the
+answer to that specific attack, and HeliumID offers them as a **second factor** — the first factor
+is still the password.
+
+* **Origin and RP-ID binding.** The browser scopes a credential to the configured relying-party id
+  and will only release an assertion to a page whose origin the server has allowlisted
+  (`HELIUM_WEBAUTHN_RP_ID`, `HELIUM_WEBAUTHN_ORIGINS`). The lookalike domain never obtains an
+  assertion at all, so there is nothing to relay. This is the whole mitigation, which is why the
+  configuration is validated at startup rather than trusted: the rp id must be the host of every
+  configured origin or a parent of it, non-`https` origins are refused outside loopback, and a
+  loopback origin is refused in production. An rp id broader than it needs to be — `example.com`
+  for a service on `app.example.com` — extends assertion-minting to every sibling subdomain, so a
+  subdomain takeover would become an authentication bypass. The process refuses to start on that
+  configuration instead of warning about it.
+* **Single-use challenges.** Every registration and authentication challenge is at least 128 bits,
+  stored server-side, redeemable exactly once, and expires in two minutes. A captured ceremony
+  cannot be replayed, and the challenge is consumed atomically so two concurrent redemptions
+  cannot both succeed.
+* **Cloned-authenticator detection.** Authenticators report a signature counter that must strictly
+  advance. A counter that repeats or goes backwards is the signal that a credential has been
+  copied off the device; the assertion is rejected rather than tolerated. Authenticators that
+  report a constant zero — most synced platform passkeys — are exempt by specification, so this
+  detects cloned *hardware* keys and nothing else. It is a signal, not a boundary.
+* **Nothing secret is stored.** The private key never leaves the authenticator. `webauthn_credentials`
+  holds public keys and credential ids in the clear because a dump of it lets an attacker verify
+  signatures, never produce them — the opposite of the TOTP row above, which is encrypted precisely
+  because it *is* a shared secret.
+* **Removal is a high-severity audit event.** Deleting a second factor is the most valuable action
+  available to somebody holding a stolen session, so `account.mfa.webauthn.remove` pages alongside
+  `account.mfa.totp.disable`. Audit metadata never carries credential ids, public keys, challenges
+  or signatures.
+
+Recovery codes remain a shared secret and remain phishable; a deployment that wants the phishing
+resistance end to end has to be willing to make account recovery an administrative action.
 
 **Session fixation.** A session identifier is never carried across an authentication state change.
 Login issues a brand-new session; MFA completion, password change and step-up reauthentication each
@@ -128,6 +167,14 @@ tokens and raw provider responses are never logged (CLAUDE.md, concept §7.5). `
 `PasswordHash` override `toString()` to redact, so an accidental interpolation prints
 `PasswordHash(argon2id, redacted)` rather than the value — the defence does not depend on every
 future log statement being written carefully.
+
+The audit trail gets the same treatment and needs it more, because it is retained rather than
+rotated. Flow metadata is assembled from flow state, so a step only has to name a key carelessly
+for the value to be written to `audit_events` permanently. Keys holding a secret are marked
+sensitive and excluded from the snapshot, and `audit-risk/AuditMetadataPolicy` applies a central
+denylist on top: credential ids, public keys, challenges, signatures, attestation and client-data
+blobs, and any oversized value are replaced with `[redacted]` before the row is written. The key
+is kept so the suppression itself is visible to whoever reads the trail.
 
 **Secrets in images and metrics.** `.dockerignore` excludes `.env*` and key material from both
 build contexts, so nothing can be baked into a layer. Metrics carry no email addresses or usernames
@@ -186,6 +233,36 @@ the entire token family is revoked, `auth_refresh_reuse_detected_total` incremen
 notified. This is the one control that turns a stolen refresh token from indefinite access into a
 detectable, bounded incident. See the runbook in `docs/operations.md`.
 
+**Trusted-device MFA exemption.** A device on which a second factor was verified may skip the
+challenge on later password logins for `HELIUM_TRUSTED_DEVICE_DAYS` (default 30, `0` disables).
+This is a deliberate, and the only, reduction in authentication assurance in the system, so it is
+worth stating precisely what it does and does not weaken.
+
+The exemption is a 256-bit value in an `HttpOnly`, `__Host-`-prefixed cookie, stored only as an
+HMAC and bound to the account — lookups are keyed on `(user_id, hash)`, so a token minted for one
+account cannot be replayed into another. It is explicitly *not* built on the user-agent/IP
+fingerprint used for new-sign-in notifications: both of those inputs are attacker-supplied, which
+is acceptable for a notification and disqualifying for a control.
+
+Four properties bound the loss:
+
+* **The session tells the truth.** A login that skipped the factor records only `pwd` in its `amr`,
+  never `otp`. Every step-up operation — password change, MFA management, admin actions — therefore
+  still demands a real factor. The exemption buys past the login prompt and nothing else.
+* **Privileged accounts are excluded.** Any principal holding a permission in
+  `Permission.STEP_UP_REQUIRED` is challenged regardless, and their cookie is not even examined.
+* **It rotates, and reuse is detected.** Each use issues a successor and retains one superseded
+  generation. Presenting the old value means the cookie was copied off the machine: the device is
+  revoked and the owner notified, in an independent transaction so the response survives the
+  challenge that unwinds the login. Same mechanism and same reasoning as refresh-token reuse.
+* **It is revoked on every signal that matters.** Password change, password reset, any MFA change,
+  admin suspension or forced sign-out, account deletion, and explicit user revocation from the
+  device list.
+
+Residual risk, stated plainly: an attacker with both the password and the unlocked machine gets in
+without the second factor, for up to the configured window. That is the trade being made. Where it
+is unacceptable, set `HELIUM_TRUSTED_DEVICE_DAYS=0`.
+
 **Authorization-code replay.** Codes are one-time, short-lived, bound to the client and to the
 redirect URI, and consumed atomically by a conditional update — so two concurrent redemptions
 cannot both succeed.
@@ -242,8 +319,13 @@ that exists.
 
 **Not implemented yet.** These are milestones, not omissions with mitigations:
 
-* **WebAuthn / passkeys** — phishing-resistant authentication is not available. TOTP is
-  phishable in real time by a relaying attacker, and the recovery-code path is a shared secret.
+* **Passwordless passkey login** — a passkey is a *second* factor here, never a first one. Signing
+  in still starts with a password. This is a deliberate scope decision, not an oversight: a
+  first-factor passkey makes the authenticator the account, so losing the phone becomes losing the
+  account, and the recovery path that replaces it is the new weakest link — an email-based
+  passkey reset would hand back exactly the phishability the passkey was bought to remove. That
+  needs its own recovery design (attested enrolment, multiple registered authenticators, an
+  out-of-band verification channel) and it is a separate milestone.
 * **LDAP and SAML federation** — no enterprise directory or SAML SP/IdP support.
 * **SCIM** — no automated user provisioning or deprovisioning. An offboarded employee is removed
   only as fast as an administrator removes them.

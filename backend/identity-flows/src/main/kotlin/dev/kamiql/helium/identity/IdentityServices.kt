@@ -4,6 +4,7 @@ import dev.kamiql.helium.domain.common.ClientId
 import dev.kamiql.helium.domain.common.EmailAddress
 import dev.kamiql.helium.domain.common.Secret
 import dev.kamiql.helium.domain.common.SessionId
+import dev.kamiql.helium.domain.common.TrustedDeviceId
 import dev.kamiql.helium.domain.common.UserId
 import dev.kamiql.helium.domain.common.Username
 import dev.kamiql.helium.domain.common.VerificationTokenId
@@ -17,12 +18,22 @@ import dev.kamiql.helium.domain.event.VerificationPurpose
 import dev.kamiql.helium.domain.policy.Lifetimes
 import dev.kamiql.helium.domain.repository.SessionRepository
 import dev.kamiql.helium.domain.repository.StoredVerificationToken
+import dev.kamiql.helium.domain.repository.TrustedDeviceRepository
 import dev.kamiql.helium.domain.repository.VerificationTokenRepository
 import dev.kamiql.helium.domain.session.AuthenticationMethod
 import dev.kamiql.helium.domain.session.IssuedSession
+import dev.kamiql.helium.domain.session.IssuedTrustedDevice
 import dev.kamiql.helium.domain.session.Session
+import dev.kamiql.helium.domain.session.TrustedDevice
+import dev.kamiql.helium.domain.session.TrustedDeviceCheck
+import dev.kamiql.helium.domain.session.TrustedDeviceRevocationReason
+import dev.kamiql.helium.domain.event.DomainEvent
 import dev.kamiql.helium.flow.FlowContext
 import dev.kamiql.helium.flow.FlowRunner
+import dev.kamiql.helium.flow.port.OutboxContext
+import dev.kamiql.helium.flow.port.OutboxPort
+import dev.kamiql.helium.flow.port.TransactionManager
+import org.slf4j.LoggerFactory
 import java.time.Instant
 
 /**
@@ -95,30 +106,208 @@ class SessionService(
         return sessions.listActiveForUser(userId, now).none { it.userAgentHash == fingerprint }
     }
 
-    private fun describeDevice(userAgent: String): String {
-        val platform = when {
-            userAgent.contains("Windows", ignoreCase = true) -> "Windows"
-            userAgent.contains("Macintosh", ignoreCase = true) -> "macOS"
-            userAgent.contains("iPhone", ignoreCase = true) -> "iPhone"
-            userAgent.contains("iPad", ignoreCase = true) -> "iPad"
-            userAgent.contains("Android", ignoreCase = true) -> "Android"
-            userAgent.contains("Linux", ignoreCase = true) -> "Linux"
-            else -> "Unknown device"
-        }
-        val browser = when {
-            userAgent.contains("Edg/", ignoreCase = true) -> "Edge"
-            userAgent.contains("OPR/", ignoreCase = true) -> "Opera"
-            userAgent.contains("Firefox", ignoreCase = true) -> "Firefox"
-            userAgent.contains("Chrome", ignoreCase = true) -> "Chrome"
-            userAgent.contains("Safari", ignoreCase = true) -> "Safari"
-            else -> null
-        }
-        return listOfNotNull(platform, browser).joinToString(" · ").take(128)
-    }
-
     private companion object {
         val TOUCH_INTERVAL: java.time.Duration = java.time.Duration.ofMinutes(5)
     }
+}
+
+/**
+ * A human-readable device name for the session and trusted-device lists.
+ *
+ * Purely cosmetic. The user agent is attacker-supplied, so nothing may branch on this — it
+ * exists so that "revoke the one that says iPhone" is a decision a person can make.
+ */
+internal fun describeDevice(userAgent: String): String {
+    val platform = when {
+        userAgent.contains("Windows", ignoreCase = true) -> "Windows"
+        userAgent.contains("Macintosh", ignoreCase = true) -> "macOS"
+        userAgent.contains("iPhone", ignoreCase = true) -> "iPhone"
+        userAgent.contains("iPad", ignoreCase = true) -> "iPad"
+        userAgent.contains("Android", ignoreCase = true) -> "Android"
+        userAgent.contains("Linux", ignoreCase = true) -> "Linux"
+        else -> "Unknown device"
+    }
+    val browser = when {
+        userAgent.contains("Edg/", ignoreCase = true) -> "Edge"
+        userAgent.contains("OPR/", ignoreCase = true) -> "Opera"
+        userAgent.contains("Firefox", ignoreCase = true) -> "Firefox"
+        userAgent.contains("Chrome", ignoreCase = true) -> "Chrome"
+        userAgent.contains("Safari", ignoreCase = true) -> "Safari"
+        else -> null
+    }
+    return listOfNotNull(platform, browser).joinToString(" · ").take(128)
+}
+
+/**
+ * Mints, checks and rotates trusted-device tokens.
+ *
+ * The credential is 256 bits of randomness in a cookie; only its HMAC is stored, so this table
+ * is not a list of devices an attacker can impersonate. Same construction as [SessionService],
+ * deliberately — a trusted device is a long-lived bearer credential and gets the same treatment
+ * the other long-lived ones get.
+ *
+ * What this service does *not* do is decide policy. Whether a device may skip MFA at all is the
+ * login flow's call; this class only answers whether a presented token is currently good, and
+ * hands back the successor.
+ */
+class TrustedDeviceService(
+    private val devices: TrustedDeviceRepository,
+    private val random: RandomSource,
+    private val tokenHasher: TokenHasher,
+    private val lifetimes: Lifetimes,
+    private val transactionManager: TransactionManager,
+    private val outbox: OutboxPort,
+) {
+
+    private val log = LoggerFactory.getLogger(TrustedDeviceService::class.java)
+
+    /** Whether the deployment has the feature switched on at all. */
+    val enabled: Boolean get() = !lifetimes.trustedDevice.isZero
+
+    /**
+     * Records a device as trusted.
+     *
+     * Only ever called after a second factor was actually verified — a token minted on the
+     * strength of a password alone would make the first login on a new machine its own bypass.
+     */
+    suspend fun remember(
+        userId: UserId,
+        context: FlowContext,
+        now: Instant,
+    ): IssuedTrustedDevice? {
+        if (!enabled) return null
+
+        val plaintext = random.token(32)
+        val device = TrustedDevice(
+            id = TrustedDeviceId.random(),
+            userId = userId,
+            tokenHash = tokenHasher.hash(plaintext),
+            previousTokenHash = null,
+            label = context.userAgent?.let(::describeDevice),
+            createdAt = now,
+            lastUsedAt = now,
+            expiresAt = now.plus(lifetimes.trustedDevice),
+            revokedAt = null,
+            revokedReason = null,
+        )
+        devices.insert(device)
+        return IssuedTrustedDevice(device, plaintext)
+    }
+
+    /**
+     * Checks a presented cookie and, on success, rotates it.
+     *
+     * Unknown, expired and revoked tokens all return [TrustedDeviceCheck.NotTrusted]. Telling
+     * them apart would let an attacker holding a pile of stolen cookies learn which ones are
+     * worth pursuing.
+     *
+     * The superseded generation is checked *before* concluding "not trusted", because a replay
+     * of an old value is the one case that must not look like an ordinary unrecognised device.
+     */
+    suspend fun check(
+        userId: UserId,
+        presented: Secret?,
+        context: FlowContext,
+        now: Instant,
+    ): TrustedDeviceCheck {
+        if (!enabled) return TrustedDeviceCheck.NotTrusted
+        val value = presented?.reveal()?.takeIf { it.isNotBlank() }
+            ?: return TrustedDeviceCheck.NotTrusted
+        val hash = tokenHasher.hash(value)
+
+        val current = devices.findByHash(userId, hash)
+        if (current != null) {
+            if (!current.isActive(now)) return TrustedDeviceCheck.NotTrusted
+
+            val successor = random.token(32)
+            val successorHash = tokenHasher.hash(successor)
+            val rotated = devices.rotate(
+                id = current.id,
+                expectedHash = hash,
+                newHash = successorHash,
+                at = now,
+            )
+            // Lost a race with a concurrent login, or the row was revoked in between. Either way
+            // this request has no valid successor to hand out, so it must not skip the factor.
+            if (!rotated) return TrustedDeviceCheck.NotTrusted
+
+            return TrustedDeviceCheck.Trusted(
+                IssuedTrustedDevice(
+                    current.copy(
+                        tokenHash = successorHash,
+                        previousTokenHash = hash,
+                        lastUsedAt = now,
+                        label = current.label ?: context.userAgent?.let(::describeDevice),
+                    ),
+                    successor,
+                ),
+            )
+        }
+
+        devices.findByPreviousHash(userId, hash)?.let { superseded ->
+            // Rotation hands out exactly one successor, so a second appearance of the old value
+            // is not a race — the cookie was copied off the machine.
+            revokeCompromisedDevice(superseded, hash, context, now)
+            return TrustedDeviceCheck.Reused(superseded)
+        }
+
+        return TrustedDeviceCheck.NotTrusted
+    }
+
+    /**
+     * Revokes a replayed device in its **own** transaction, and writes the notification there too.
+     *
+     * Both parts have to outlive the caller. Detecting reuse makes the login demand a second
+     * factor, which the flow signals with a challenge — and a challenge unwinds the surrounding
+     * transaction by design ([FlowRunner][dev.kamiql.helium.flow.FlowRunner]). Revoking inside
+     * that transaction would hand the attacker a rollback of the very response to their theft.
+     * Same reasoning, same mechanism as refresh-token reuse in the OAuth flows.
+     */
+    private suspend fun revokeCompromisedDevice(
+        device: TrustedDevice,
+        supersededHash: String,
+        context: FlowContext,
+        now: Instant,
+    ) {
+        runCatching {
+            transactionManager.requiresNew {
+                // The claim decides whether this call is the one that reports the incident.
+                // Publishing unconditionally would let whoever holds the copied cookie generate
+                // a security mail per attempt simply by re-sending it.
+                val claimed = devices.claimReuse(device.userId, device.id, supersededHash, now)
+                if (!claimed) return@requiresNew
+
+                log.error(
+                    "trusted device reuse detected for user {}; revoking device {}",
+                    device.userId, device.id,
+                )
+                outbox.publish(
+                    events = listOf(DomainEvent.TrustedDeviceReuseDetected(device.userId, device.id)),
+                    context = OutboxContext(context.requestId, now),
+                )
+            }
+        }.onFailure {
+            // Must not mask the outcome: the caller still gets an ordinary MFA challenge, so a
+            // failure here is silent to the attacker and has to be loud in the logs.
+            log.error("FAILED to revoke reused trusted device {}; it may still be live", device.id, it)
+        }
+    }
+
+    suspend fun list(userId: UserId, now: Instant): List<TrustedDevice> =
+        devices.listActiveForUser(userId, now)
+
+    suspend fun revoke(
+        userId: UserId,
+        id: TrustedDeviceId,
+        now: Instant,
+        reason: TrustedDeviceRevocationReason,
+    ): Boolean = devices.revoke(userId, id, now, reason)
+
+    suspend fun revokeAll(
+        userId: UserId,
+        now: Instant,
+        reason: TrustedDeviceRevocationReason,
+    ): Int = devices.revokeAllForUser(userId, now, reason)
 }
 
 /**

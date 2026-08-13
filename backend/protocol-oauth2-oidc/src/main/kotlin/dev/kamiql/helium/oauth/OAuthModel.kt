@@ -178,6 +178,22 @@ data class ClientSecretIssued(
 
 data class DeleteClientCommand(val clientId: ClientId)
 
+// --- scope administration ------------------------------------------------------
+
+/**
+ * Creates a scope or replaces its description and consent behaviour.
+ *
+ * There is no separate create/update split, matching the role editor: an administrator writing
+ * a scope definition should not have to know whether it already exists.
+ */
+data class UpsertScopeCommand(
+    val name: String,
+    val description: String,
+    val implicit: Boolean,
+)
+
+data class DeleteScopeCommand(val name: String)
+
 /** Result of the consent decision flow. */
 data class GrantConsentCommand(
     val clientId: ClientId,

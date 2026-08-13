@@ -246,6 +246,23 @@ class MailOutboxHandler(
                     "again. If you did not expect this, change your password.",
             )
 
+            "auth.trusted-device-reuse-detected" -> notify(
+                recipient, name,
+                "Security alert: a trusted device was used from somewhere else",
+                "A device you told us to trust presented an out-of-date credential, which usually " +
+                    "means it was copied from that machine. We have removed the device, so the next " +
+                    "sign-in there will ask for your authentication code again. Nobody got in using " +
+                    "it — the password is still required. If you did not expect this, change your " +
+                    "password and review your trusted devices.",
+            )
+
+            // Deliberately not notified: `auth.trusted-device-added` and
+            // `auth.trusted-device-used`. The first is something the user just did on purpose one
+            // second earlier, the second happens on every sign-in from that machine — and a
+            // security mail people learn to delete is worse than no mail at all. Both are in the
+            // audit log, and `auth.login-succeeded` above already covers a sign-in from a device
+            // that has not been seen before.
+
             else -> log.debug("no mail template for {}", event.eventType)
         }
     }

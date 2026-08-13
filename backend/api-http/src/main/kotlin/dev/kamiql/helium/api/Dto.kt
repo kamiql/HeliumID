@@ -2,10 +2,17 @@ package dev.kamiql.helium.api
 
 import dev.kamiql.helium.domain.client.ClientType
 import dev.kamiql.helium.domain.client.OAuthClient
+import dev.kamiql.helium.domain.client.Scope
+import dev.kamiql.helium.domain.common.Secret
 import dev.kamiql.helium.domain.identity.ExternalIdentity
 import dev.kamiql.helium.domain.mfa.MfaFactor
+import dev.kamiql.helium.domain.mfa.MfaResponse
+import dev.kamiql.helium.domain.mfa.MfaType
+import dev.kamiql.helium.domain.mfa.WebAuthnAuthenticationOptions
+import dev.kamiql.helium.domain.mfa.WebAuthnRegistrationOptions
 import dev.kamiql.helium.domain.policy.Role
 import dev.kamiql.helium.domain.session.Session
+import dev.kamiql.helium.domain.session.TrustedDevice
 import dev.kamiql.helium.domain.user.User
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -36,13 +43,84 @@ data class LoginRequest(
     val password: String,
 )
 
+/**
+ * Asks for the nonce a challenge-signing method needs before it can be answered.
+ *
+ * Its own round trip rather than a field on [MfaVerifyRequest]: a passkey assertion cannot be
+ * produced without a server-chosen challenge, so the client has to be handed one before it can
+ * fill in the verify call at all.
+ */
+@Serializable
+data class MfaChallengeRequest(
+    @SerialName("transaction_id") val transactionId: String,
+    /** `totp`, `recovery_code` or `webauthn`. */
+    val method: String,
+)
+
+/** @param webauthn absent for methods that have nothing to sign. */
+@Serializable
+data class MfaChallengeResponse(
+    val method: String,
+    val webauthn: WebAuthnAuthenticationOptionsResponse? = null,
+)
+
 @Serializable
 data class MfaVerifyRequest(
     @SerialName("transaction_id") val transactionId: String,
-    /** `totp` or `recovery_code`. */
+    /** `totp`, `recovery_code` or `webauthn`. */
     val method: String,
-    val code: String,
+    /**
+     * The typed value, for `totp` and `recovery_code`.
+     *
+     * Optional since passkeys arrived: exactly one of this and [webauthn] carries the answer,
+     * and which one is decided by [method]. Kept as the first field a client learns about so
+     * every pre-passkey caller still validates unchanged.
+     */
+    val code: String? = null,
+    /** Output of `navigator.credentials.get()`, for `webauthn`. */
+    val webauthn: WebAuthnAssertionRequest? = null,
+    /**
+     * The "don't ask again on this device" checkbox.
+     *
+     * Defaulted so an older client that omits it never accidentally opts in — the field lowers
+     * the assurance of every later login on this browser, and silence is not a request.
+     */
+    @SerialName("remember_device") val rememberDevice: Boolean = false,
 )
+
+/**
+ * Reads the answer out of a verify request.
+ *
+ * The two credential fields are optional on the wire but exactly one of them must be filled in,
+ * and it must be the one [method] announced. That is a shape rule, not an authentication
+ * decision, so it is settled here and reported as a validation problem: answering a malformed
+ * body with `mfa_invalid` would spend one of the transaction's five attempts on a client bug
+ * and let a caller probe the server by field layout instead of by secret.
+ *
+ * A blank [MfaVerifyRequest.code] counts as absent. Forms submit empty strings for untouched
+ * inputs, and reading `""` as "present" would make an otherwise valid passkey request ambiguous.
+ */
+internal fun MfaVerifyRequest.readResponse(method: MfaType): MfaResponseResult {
+    val typed = code?.takeIf { it.isNotBlank() }
+    if (typed != null && webauthn != null) return MfaResponseResult.Invalid("ambiguous")
+    return when (method) {
+        MfaType.WEBAUTHN -> webauthn
+            ?.let { MfaResponseResult.Valid(it.toDomain()) }
+            ?: MfaResponseResult.Invalid(if (typed != null) "method_mismatch" else "missing")
+
+        MfaType.TOTP, MfaType.RECOVERY_CODE -> typed
+            ?.let { MfaResponseResult.Valid(MfaResponse.Code(Secret.of(it))) }
+            ?: MfaResponseResult.Invalid(if (webauthn != null) "method_mismatch" else "missing")
+    }
+}
+
+/** @see readResponse */
+internal sealed interface MfaResponseResult {
+    data class Valid(val response: MfaResponse) : MfaResponseResult
+
+    /** @param reason stable token for the `response` key of a validation problem. */
+    data class Invalid(val reason: String) : MfaResponseResult
+}
 
 @Serializable
 data class TokenRequestBody(val token: String)
@@ -144,6 +222,41 @@ fun Session.toResponse(current: Boolean): SessionResponse = SessionResponse(
     current = current,
 )
 
+/**
+ * A remembered device, as the account UI sees it.
+ *
+ * Enough to recognise a device and revoke it, and nothing else. Both stored hashes stay out:
+ * they are the verifiers for a credential that waives the second factor, and an endpoint any
+ * signed-in browser can call is a far easier thing to reach than the table they live in.
+ */
+@Serializable
+data class TrustedDeviceResponse(
+    val id: String,
+    /** Derived from the user agent, so treat it as a hint rather than an identification. */
+    val label: String?,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("last_used_at") val lastUsedAt: String,
+    /** Absolute and non-sliding: the date this device stops being able to skip the challenge. */
+    @SerialName("expires_at") val expiresAt: String,
+)
+
+fun TrustedDevice.toResponse(): TrustedDeviceResponse = TrustedDeviceResponse(
+    id = id.value.toString(),
+    label = label,
+    createdAt = createdAt.toString(),
+    lastUsedAt = lastUsedAt.toString(),
+    expiresAt = expiresAt.toString(),
+)
+
+/**
+ * Outcome of forgetting every device at once.
+ *
+ * The count exists so the UI can confirm what happened; it is not an error signal, and zero is a
+ * perfectly ordinary answer for a user who had nothing remembered.
+ */
+@Serializable
+data class TrustedDevicesRevokedResponse(val revoked: Int)
+
 @Serializable
 data class LinkedProviderResponse(
     val provider: String,
@@ -201,6 +314,141 @@ data class TotpDisableRequest(
     @SerialName("factor_id") val factorId: String,
     @SerialName("current_password") val currentPassword: String? = null,
 )
+
+// --- WebAuthn ------------------------------------------------------------------
+//
+// Every binary field below is base64url, in both directions. The bytes are decoded by the
+// WebAuthn adapter and nowhere else, so nothing on this boundary needs a CBOR or COSE parser —
+// and none of these values is ever logged: a credential id identifies an authenticator, and
+// client data, signatures and challenges are the inputs an attacker would need to forge one.
+
+@Serializable
+data class WebAuthnEnrollRequest(
+    /** What the user calls this authenticator. `null` lets the flow pick a default. */
+    val label: String? = null,
+)
+
+/** `PublicKeyCredentialCreationOptions`, as the browser needs them. */
+@Serializable
+data class WebAuthnRegistrationOptionsResponse(
+    val challenge: String,
+    @SerialName("rp_id") val rpId: String,
+    @SerialName("rp_name") val rpName: String,
+    @SerialName("user_handle") val userHandle: String,
+    @SerialName("user_name") val userName: String,
+    @SerialName("user_display_name") val userDisplayName: String,
+    /** COSE algorithm identifiers, in the server's order of preference. */
+    val algorithms: List<Long>,
+    @SerialName("exclude_credential_ids") val excludeCredentialIds: List<String>,
+    @SerialName("user_verification") val userVerification: String,
+    @SerialName("timeout_ms") val timeoutMs: Long,
+)
+
+fun WebAuthnRegistrationOptions.toResponse(): WebAuthnRegistrationOptionsResponse =
+    WebAuthnRegistrationOptionsResponse(
+        challenge = challenge,
+        rpId = rpId,
+        rpName = rpName,
+        userHandle = userHandle,
+        userName = userName,
+        userDisplayName = userDisplayName,
+        algorithms = algorithms,
+        excludeCredentialIds = excludeCredentialIds,
+        // Lowercase because that is the spelling the WebAuthn API itself takes; a client should
+        // be able to hand this straight to `navigator.credentials` without a lookup table.
+        userVerification = userVerification.name.lowercase(),
+        timeoutMs = timeout.toMillis(),
+    )
+
+/** `PublicKeyCredentialRequestOptions`, as the browser needs them. */
+@Serializable
+data class WebAuthnAuthenticationOptionsResponse(
+    val challenge: String,
+    @SerialName("rp_id") val rpId: String,
+    @SerialName("allow_credential_ids") val allowCredentialIds: List<String>,
+    @SerialName("user_verification") val userVerification: String,
+    @SerialName("timeout_ms") val timeoutMs: Long,
+)
+
+fun WebAuthnAuthenticationOptions.toResponse(): WebAuthnAuthenticationOptionsResponse =
+    WebAuthnAuthenticationOptionsResponse(
+        challenge = challenge,
+        rpId = rpId,
+        allowCredentialIds = allowCredentialIds,
+        userVerification = userVerification.name.lowercase(),
+        timeoutMs = timeout.toMillis(),
+    )
+
+/**
+ * The factor id issued by `enroll`, plus the authenticator's answer.
+ *
+ * [label] is repeated here rather than only being taken at `enroll` so a user who was shown a
+ * name-your-key prompt *after* touching the authenticator can still have it recorded.
+ */
+@Serializable
+data class WebAuthnConfirmRequest(
+    @SerialName("factor_id") val factorId: String,
+    val label: String? = null,
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("client_data_json") val clientDataJson: String,
+    @SerialName("attestation_object") val attestationObject: String,
+    /** Authenticator-reported transports (`usb`, `nfc`, `internal`, …). Advisory only. */
+    val transports: List<String> = emptyList(),
+)
+
+fun WebAuthnConfirmRequest.toDomain(): MfaResponse.WebAuthnRegistration =
+    MfaResponse.WebAuthnRegistration(
+        credentialId = credentialId,
+        clientDataJson = clientDataJson,
+        attestationObject = attestationObject,
+        transports = transports,
+    )
+
+@Serializable
+data class WebAuthnEnrollResponse(
+    @SerialName("factor_id") val factorId: String,
+    val options: WebAuthnRegistrationOptionsResponse,
+)
+
+/**
+ * @param recoveryCodes present only when this passkey is the user's first factor. Regenerating
+ *        them for every enrollment would silently invalidate the codes a user already wrote down.
+ */
+@Serializable
+data class WebAuthnConfirmResponse(
+    @SerialName("factor_id") val factorId: String,
+    @SerialName("recovery_codes") val recoveryCodes: List<String>? = null,
+)
+
+@Serializable
+data class WebAuthnRemoveRequest(
+    @SerialName("factor_id") val factorId: String,
+    @SerialName("current_password") val currentPassword: String? = null,
+)
+
+/**
+ * Output of `navigator.credentials.get()`.
+ *
+ * [userHandle] is absent for a non-discoverable credential, which is the ordinary case for a
+ * second factor: the MFA transaction already says who is signing in.
+ */
+@Serializable
+data class WebAuthnAssertionRequest(
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("client_data_json") val clientDataJson: String,
+    @SerialName("authenticator_data") val authenticatorData: String,
+    val signature: String,
+    @SerialName("user_handle") val userHandle: String? = null,
+)
+
+fun WebAuthnAssertionRequest.toDomain(): MfaResponse.WebAuthnAssertion =
+    MfaResponse.WebAuthnAssertion(
+        credentialId = credentialId,
+        clientDataJson = clientDataJson,
+        authenticatorData = authenticatorData,
+        signature = signature,
+        userHandle = userHandle,
+    )
 
 @Serializable
 data class PasswordRequirementsResponse(
@@ -353,6 +601,30 @@ data class ScopeResponse(
     val name: String,
     val description: String,
     val implicit: Boolean,
+    /** Protocol-level scope. Cannot be edited or deleted; a role editor should show it read-only. */
+    @SerialName("built_in") val builtIn: Boolean,
+)
+
+fun Scope.toResponse(): ScopeResponse = ScopeResponse(
+    name = name,
+    description = description,
+    implicit = implicit,
+    builtIn = builtIn,
+)
+
+/** Body of `PUT /v1/admin/scopes/{name}`. The name comes from the path, not from here. */
+@Serializable
+data class UpsertScopeRequest(
+    /** Shown verbatim on the consent screen, so it must read as a sentence to a non-technical user. */
+    val description: String,
+    /**
+     * Grant without showing it on the consent screen.
+     *
+     * Only appropriate for a scope that carries no user-visible authority of its own — `openid`
+     * is the reason this exists. Defaults to false: a scope a user never sees is a scope they
+     * never declined.
+     */
+    val implicit: Boolean = false,
 )
 
 // --- OAuth protocol ------------------------------------------------------------------

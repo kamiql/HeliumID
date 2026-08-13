@@ -1,21 +1,14 @@
-import {
-    Box,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
-    Stack,
-    TextField,
-    Typography,
-} from "@mui/material"
+import { Dialog, DialogActions, DialogContent, DialogTitle, Stack, TextField } from "@mui/material"
 import { useState } from "react"
 import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx"
 import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx"
+import DefinitionList from "../../../../components/ui/DefinitionList.tsx"
 import ErrorAlert from "../../../../components/ErrorAlert.tsx"
 import { useUser } from "../../../../hooks/useUser.ts"
 import { useAuthStore } from "../../../../stores/auth.store.ts"
 import { accountApi } from "../../../../api/account.ts"
 import { describeFieldError, toHeliumError } from "../../../../api/problem.ts"
+import { formatDate } from "../../../../lib/format.ts"
 import { notify } from "../../../../stores/notice.store.ts"
 
 /** Username and name. The email address has its own box — changing it is a two-step flow. */
@@ -65,47 +58,29 @@ export default function ProfileBox() {
         }
     }
 
-    const fields: [string, string][] = [
-        ["Username", user.username],
-        ["First name", user.firstName || "—"],
-        ["Last name", user.lastName || "—"],
-        ["Member since", new Date(user.created_at).toLocaleDateString()],
-    ]
-
     return (
         <>
             <AccountBox
                 title="Personal information"
                 description="Information associated with your identity."
-                sx={{
-                    flex: "1 1 300px",
-                    minWidth: "250px",
-                }}
+                actions={
+                    <AccountButton
+                        variant="outlined"
+                        onClick={handleOpen}
+                        aria-label="Edit personal information"
+                    >
+                        Edit
+                    </AccountButton>
+                }
             >
-                <Box
-                    sx={{
-                        display: "grid",
-                        gridTemplateColumns: {
-                            xs: "1fr",
-                            sm: "1fr 1fr",
-                        },
-                        gap: 3,
-                    }}
-                >
-                    {fields.map(([label, value]) => (
-                        <Box key={label}>
-                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                                {label}
-                            </Typography>
-
-                            <Typography sx={{ mt: 0.5 }}>{value}</Typography>
-                        </Box>
-                    ))}
-                </Box>
-
-                <AccountButton variant="contained" onClick={handleOpen}>
-                    Edit personal information
-                </AccountButton>
+                <DefinitionList
+                    items={[
+                        { label: "Username", value: user.username },
+                        { label: "First name", value: user.firstName || null },
+                        { label: "Last name", value: user.lastName || null },
+                        { label: "Member since", value: formatDate(user.created_at) },
+                    ]}
+                />
             </AccountBox>
 
             <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">

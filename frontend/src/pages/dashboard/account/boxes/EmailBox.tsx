@@ -1,17 +1,19 @@
 import {
     Alert,
-    Box,
     Chip,
     Dialog,
     DialogActions,
     DialogContent,
     DialogTitle,
+    Link,
     Stack,
-    Typography,
 } from "@mui/material"
+import { CheckCircleOutlined, ErrorOutlined } from "@mui/icons-material"
 import { useState } from "react"
 import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx"
 import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx"
+import { ACCOUNT_ANCHORS } from "../../../../components/dashboard/account/AccountRequirement.tsx"
+import DefinitionList from "../../../../components/ui/DefinitionList.tsx"
 import EmailField from "../../../../components/EmailField.tsx"
 import PasswordField from "../../../../components/PasswordField.tsx"
 import ErrorAlert from "../../../../components/ErrorAlert.tsx"
@@ -89,42 +91,63 @@ export default function EmailBox() {
     return (
         <>
             <AccountBox
+                id={ACCOUNT_ANCHORS.email}
                 title="Email address"
                 description="The address used for sign-in notices and account recovery."
-                sx={{
-                    flex: "1 1 300px",
-                    minWidth: "250px",
-                }}
-            >
-                <Box>
-                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                        Current address
-                    </Typography>
-
-                    <Typography sx={{ mt: 0.5, wordBreak: "break-all" }}>{user.email}</Typography>
-                </Box>
-
-                <Chip
-                    label={user.email_verified ? "Email verified" : "Email not verified"}
-                    color={user.email_verified ? "success" : "warning"}
-                    variant="outlined"
-                    sx={{ width: "fit-content" }}
-                />
-
-                <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", gap: 1 }}>
-                    <AccountButton variant="outlined" onClick={() => setOpen(true)}>
+                actions={
+                    <AccountButton variant="contained" onClick={() => setOpen(true)}>
                         Change email
                     </AccountButton>
+                }
+                banner={
+                    <Chip
+                        size="small"
+                        variant="outlined"
+                        color={user.email_verified ? "success" : "warning"}
+                        icon={user.email_verified ? <CheckCircleOutlined /> : <ErrorOutlined />}
+                        label={user.email_verified ? "Verified" : "Not verified"}
+                    />
+                }
+            >
+                <Stack sx={{ gap: 2, alignItems: "flex-start" }}>
+                    <DefinitionList
+                        columns={1}
+                        sx={{ width: "100%" }}
+                        items={[{ label: "Current address", value: user.email, wide: true }]}
+                    />
 
                     {!user.email_verified && (
-                        <AccountButton variant="text" onClick={() => void handleResendVerification()}>
-                            Resend verification
-                        </AccountButton>
+                        <Alert
+                            severity="warning"
+                            sx={{ alignSelf: "stretch" }}
+                            action={
+                                <AccountButton
+                                    color="inherit"
+                                    size="small"
+                                    aria-label="Resend verification email"
+                                    onClick={() => void handleResendVerification()}
+                                >
+                                    Resend
+                                </AccountButton>
+                            }
+                        >
+                            This address is not verified yet. Open the link in the verification
+                            email, or send yourself a new one.
+                        </Alert>
                     )}
 
-                    <AccountButton variant="text" onClick={() => setConfirmOpen(true)}>
-                        I have a confirmation code
-                    </AccountButton>
+                    {/*
+                     * The rare path: someone who has the mail open but lost the tab. It stays
+                     * reachable, quietly, rather than sitting beside the primary action.
+                     */}
+                    <Link
+                        component="button"
+                        type="button"
+                        variant="body2"
+                        onClick={() => setConfirmOpen(true)}
+                    >
+                        I already have a confirmation code
+                    </Link>
                 </Stack>
             </AccountBox>
 

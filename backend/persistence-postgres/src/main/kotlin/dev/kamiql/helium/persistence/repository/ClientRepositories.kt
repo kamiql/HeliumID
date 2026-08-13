@@ -122,14 +122,52 @@ class ClientRepositoryImpl(private val database: Database) : ClientRepository {
     }
 
     override suspend fun listScopes(): List<Scope> = dbQuery(database) {
-        OAuthScopesTable.selectAll().map { row ->
-            Scope(
-                name = row[OAuthScopesTable.name],
-                description = row[OAuthScopesTable.description],
-                implicit = row[OAuthScopesTable.implicit],
-            )
-        }
+        OAuthScopesTable.selectAll().map { it.toScope() }
     }
+
+    override suspend fun findScope(name: String): Scope? = dbQuery(database) {
+        OAuthScopesTable.selectAll()
+            .where { OAuthScopesTable.name eq name }
+            .firstOrNull()
+            ?.toScope()
+    }
+
+    override suspend fun upsertScope(scope: Scope, at: Instant): Scope = dbQuery(database) {
+        OAuthScopesTable.upsert(
+            OAuthScopesTable.name,
+            // `created_at` keeps the original registration time, and `built_in` is set by the
+            // migration alone — an update must not be able to promote a scope into, or demote one
+            // out of, the protected set.
+            onUpdateExclude = listOf(OAuthScopesTable.createdAt, OAuthScopesTable.builtIn),
+        ) { row ->
+            row[name] = scope.name
+            row[description] = scope.description
+            row[implicit] = scope.implicit
+            row[builtIn] = scope.builtIn
+            row[createdAt] = at.toDb()
+        }
+        // Read back rather than echo the argument: on update the stored `built_in` and
+        // `created_at` win, and returning the argument would report values that were not written.
+        OAuthScopesTable.selectAll()
+            .where { OAuthScopesTable.name eq scope.name }
+            .first()
+            .toScope()
+    }
+
+    override suspend fun deleteScope(name: String): Boolean = dbQuery(database) {
+        OAuthScopesTable.deleteWhere { OAuthScopesTable.name eq name } > 0
+    }
+
+    override suspend fun clientsUsingScope(name: String): Long = dbQuery(database) {
+        OAuthClientScopesTable.selectAll().where { OAuthClientScopesTable.scope eq name }.count()
+    }
+
+    private fun ResultRow.toScope(): Scope = Scope(
+        name = this[OAuthScopesTable.name],
+        description = this[OAuthScopesTable.description],
+        implicit = this[OAuthScopesTable.implicit],
+        builtIn = this[OAuthScopesTable.builtIn],
+    )
 
     private fun writeRedirectUris(client: OAuthClient) {
         client.redirectUris.forEach { uri ->

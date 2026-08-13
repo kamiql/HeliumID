@@ -27,9 +27,30 @@ object AuditEventType {
     const val ACCOUNT_DELETED = "account.delete"
 
     // MFA
-    const val MFA_ENROLLED = "account.mfa.totp.confirm"
-    const val MFA_DISABLED = "account.mfa.totp.disable"
+    //
+    // These values are flow ids: `FlowRunner` writes `flow.auditEventType` into `event_type`, and
+    // that defaults to the flow's id. There is therefore one constant per *factor type*, not one
+    // per concept. A single `MFA_DISABLED` naming only the TOTP flow is not a shorthand — it is a
+    // filter that silently excludes every other factor, and anything keyed on it (alerting,
+    // [HIGH_SEVERITY], operator queries) stops covering that factor the moment it ships.
+    const val TOTP_ENROLLED = "account.mfa.totp.confirm"
+    const val TOTP_DISABLED = "account.mfa.totp.disable"
+    const val WEBAUTHN_ENROLLMENT_STARTED = "account.mfa.webauthn.begin"
+    const val WEBAUTHN_ENROLLED = "account.mfa.webauthn.confirm"
+    const val WEBAUTHN_REMOVED = "account.mfa.webauthn.remove"
     const val RECOVERY_CODES_REGENERATED = "account.mfa.recovery-codes.regenerate"
+
+    /** Every event that adds a second factor. One entry per factor type. */
+    val SECOND_FACTOR_ENROLLED: Set<String> = setOf(TOTP_ENROLLED, WEBAUTHN_ENROLLED)
+
+    /**
+     * Every event that takes a second factor away. All of these are [HIGH_SEVERITY].
+     *
+     * Removing a factor is the single most valuable action available to somebody holding a stolen
+     * session: it converts temporary access into durable access. Grouping the events means the
+     * severity decision is made once for the category rather than re-argued per factor.
+     */
+    val SECOND_FACTOR_REMOVED: Set<String> = setOf(TOTP_DISABLED, WEBAUTHN_REMOVED)
 
     // identities
     const val PROVIDER_LINKED = "identity.provider-linked"
@@ -40,6 +61,12 @@ object AuditEventType {
     const val TOKEN_ISSUED = "oauth.token"
     const val TOKEN_REVOKED = "oauth.revoke"
     const val REFRESH_REUSE_DETECTED = "token.refresh-reuse-detected"
+
+    // trusted devices
+    const val TRUSTED_DEVICE_ADDED = "auth.trusted-device-added"
+    const val TRUSTED_DEVICE_USED = "auth.trusted-device-used"
+    const val TRUSTED_DEVICE_REVOKED = "auth.trusted-device-revoked"
+    const val TRUSTED_DEVICE_REUSE_DETECTED = "auth.trusted-device-reuse-detected"
 
     // administration
     const val ADMIN_USER_STATUS_CHANGED = "admin.user.status"
@@ -54,14 +81,47 @@ object AuditEventType {
      * Refresh-token reuse is the clearest signal of credential theft this system can produce;
      * the rest indicate an account takeover in progress or an administrative action worth a
      * second pair of eyes.
+     *
+     * Classify with [isHighSeverity] rather than testing membership directly — see the note
+     * there on why an explicit set is not sufficient on its own.
      */
     val HIGH_SEVERITY: Set<String> = setOf(
         REFRESH_REUSE_DETECTED,
-        MFA_DISABLED,
+        // A device cookie can only reappear after rotation if it was copied off the machine.
+        // Lower impact than a stolen refresh token — it is useless without the password — but
+        // the same category of evidence, so it gets the same attention.
+        TRUSTED_DEVICE_REUSE_DETECTED,
         ADMIN_USER_STATUS_CHANGED,
         ADMIN_ROLES_ASSIGNED,
         CLIENT_SECRET_ROTATED,
-    )
+    ) + SECOND_FACTOR_REMOVED
+
+    /** Prefix shared by every self-service MFA management flow id. */
+    private const val MFA_EVENT_PREFIX = "account.mfa."
+
+    /** Trailing flow-id segments that mean "a factor was taken away". */
+    private val FACTOR_REMOVAL_VERBS = setOf("disable", "remove", "delete", "revoke", "unenroll")
+
+    /**
+     * Whether [eventType] warrants a page.
+     *
+     * Use this instead of `eventType in HIGH_SEVERITY`. A hand-maintained set only contains what
+     * somebody remembered to add, and the failure mode of forgetting is *silence*: the alert
+     * simply never fires, and nothing else looks wrong. That has already happened once here —
+     * the removal event was pinned to the TOTP flow id, so a second factor removed by any other
+     * means would not have been classified.
+     *
+     * The structural rule below closes that gap for the case that matters most: any
+     * `account.mfa.<factor>.<verb>` event whose verb removes a factor is high severity whether or
+     * not a constant for it exists yet. It errs towards over-alerting, which is the correct
+     * direction for this particular decision.
+     */
+    fun isHighSeverity(eventType: String): Boolean =
+        eventType in HIGH_SEVERITY || removesSecondFactor(eventType)
+
+    private fun removesSecondFactor(eventType: String): Boolean =
+        eventType.startsWith(MFA_EVENT_PREFIX) &&
+            eventType.substringAfterLast('.') in FACTOR_REMOVAL_VERBS
 }
 
 /**
@@ -75,6 +135,15 @@ object MetricNames {
     const val LOGIN_ATTEMPTS = "auth_login_attempts_total"
     const val LOGIN_FAILURES = "auth_login_failures_total"
     const val MFA_CHALLENGES = "auth_mfa_challenges_total"
+
+    /**
+     * Logins that skipped the second factor on a trusted device.
+     *
+     * Meaningful only next to [MFA_CHALLENGES]: this feature legitimately drives challenges down,
+     * so a fall in that counter is only alarming when this one does not rise to meet it.
+     */
+    const val TRUSTED_DEVICE_SKIPS = "auth_trusted_device_skips_total"
+    const val TRUSTED_DEVICE_REUSE_DETECTED = "auth_trusted_device_reuse_detected_total"
     const val REFRESH_REUSE_DETECTED = "auth_refresh_reuse_detected_total"
     const val OAUTH_CALLBACK_FAILURES = "oauth_callback_failures_total"
     const val PASSWORD_HASH_DURATION = "password_hash_duration_seconds"

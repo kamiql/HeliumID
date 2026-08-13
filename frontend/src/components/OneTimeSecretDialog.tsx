@@ -1,17 +1,21 @@
 import {
     Alert,
+    AlertTitle,
     Box,
     Button,
+    Checkbox,
     Dialog,
     DialogActions,
     DialogContent,
+    DialogContentText,
     DialogTitle,
+    FormControlLabel,
     Stack,
-    Typography,
 } from "@mui/material"
 import { Download } from "@mui/icons-material"
-import { useState } from "react"
+import { useId, useState } from "react"
 import CopyButton from "./CopyButton.tsx"
+import { MONO_FONT } from "../lib/theme.ts"
 
 type OneTimeSecretDialogProps = {
     open: boolean
@@ -43,7 +47,11 @@ export default function OneTimeSecretDialog({
 }: OneTimeSecretDialogProps) {
     const [acknowledged, setAcknowledged] = useState(false)
 
+    const titleId = useId()
+    const descriptionId = useId()
+
     const joined = values.join("\n")
+    const many = values.length > 1
 
     const download = () => {
         const blob = new Blob([`${joined}\n`], { type: "text/plain;charset=utf-8" })
@@ -65,62 +73,118 @@ export default function OneTimeSecretDialog({
             open={open}
             fullWidth
             maxWidth="sm"
+            aria-labelledby={titleId}
+            aria-describedby={descriptionId}
             // No backdrop dismissal: an accidental click outside would destroy the only copy.
             onClose={(_event, reason) => {
                 if (reason === "backdropClick" || reason === "escapeKeyDown") return
                 close()
             }}
         >
-            <DialogTitle>{title}</DialogTitle>
+            <DialogTitle id={titleId}>{title}</DialogTitle>
 
             <DialogContent>
                 <Stack spacing={2}>
                     <Alert severity="warning">
-                        These values are shown once. They are stored only as a hash, so we cannot
-                        show them again — save them now.
+                        <AlertTitle>Shown once</AlertTitle>
+                        These values are stored only as a hash, so we cannot show them again —
+                        save them now.
                     </Alert>
 
-                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    <DialogContentText id={descriptionId} variant="body2">
                         {description}
-                    </Typography>
+                    </DialogContentText>
 
                     <Box
+                        component={many ? "ol" : "div"}
+                        // `list-style: none` drops list semantics in some browsers; the role
+                        // puts them back so the count is still announced.
+                        role={many ? "list" : undefined}
+                        aria-label={many ? "Generated values" : undefined}
                         sx={{
-                            p: 2,
+                            listStyle: "none",
+                            m: 0,
+                            p: 1,
                             borderRadius: 2,
                             border: "1px solid",
                             borderColor: "divider",
                             backgroundColor: "action.hover",
-                            fontFamily: "monospace",
-                            fontSize: "0.9rem",
-                            wordBreak: "break-all",
                             display: "grid",
-                            gridTemplateColumns: values.length > 1 ? { xs: "1fr", sm: "1fr 1fr" } : "1fr",
-                            gap: 1,
+                            // One column on a phone: a two-up grid of long values wraps into
+                            // an unreadable block at 360px.
+                            gridTemplateColumns: many ? { xs: "1fr", sm: "1fr 1fr" } : "1fr",
+                            gap: 0.5,
                         }}
                     >
                         {values.map((value) => (
-                            <Box key={value}>{value}</Box>
+                            <Box
+                                key={value}
+                                component={many ? "li" : "div"}
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                    minWidth: 0,
+                                    px: 1,
+                                    py: 0.5,
+                                    borderRadius: 1.5,
+                                }}
+                            >
+                                <Box
+                                    component="span"
+                                    sx={{
+                                        flex: 1,
+                                        minWidth: 0,
+                                        fontFamily: MONO_FONT,
+                                        fontSize: "0.8125rem",
+                                        lineHeight: 1.6,
+                                        // Secrets have no word boundaries, so they have to be
+                                        // allowed to break mid-token rather than overflow.
+                                        wordBreak: "break-all",
+                                        color: "text.primary",
+                                    }}
+                                >
+                                    {value}
+                                </Box>
+
+                                {/*
+                                  * A per-entry copy button only earns its place in a list:
+                                  * with a single value, "Copy all" below already does it.
+                                  */}
+                                {many && <CopyButton value={value} label="Copy code" iconOnly />}
+                            </Box>
                         ))}
                     </Box>
 
-                    <Stack direction="row" spacing={1}>
+                    <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1}
+                        sx={{ alignItems: { xs: "stretch", sm: "center" } }}
+                    >
                         <CopyButton value={joined} label="Copy all" />
 
-                        <Button size="small" variant="outlined" startIcon={<Download />} onClick={download}>
+                        <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<Download />}
+                            onClick={download}
+                        >
                             Download
                         </Button>
                     </Stack>
 
                     {requireAcknowledgement && (
-                        <Button
-                            variant={acknowledged ? "contained" : "outlined"}
-                            color={acknowledged ? "success" : "inherit"}
-                            onClick={() => setAcknowledged(true)}
-                            disabled={acknowledged}
-                        >
-                            {acknowledged ? "Saved" : "I have saved these somewhere safe"}
-                        </Button>
+                        <FormControlLabel
+                            sx={{ mr: 0, alignItems: "flex-start" }}
+                            control={
+                                <Checkbox
+                                    checked={acknowledged}
+                                    onChange={(event) => setAcknowledged(event.target.checked)}
+                                    sx={{ pt: 0.25 }}
+                                />
+                            }
+                            label="I have saved these somewhere safe"
+                        />
                     )}
                 </Stack>
             </DialogContent>

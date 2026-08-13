@@ -13,9 +13,11 @@ import dev.kamiql.helium.identity.AdminAssignRolesCommand
 import dev.kamiql.helium.identity.AdminRevokeUserSessionsCommand
 import dev.kamiql.helium.identity.AdminUpdateUserStatusCommand
 import dev.kamiql.helium.oauth.DeleteClientCommand
+import dev.kamiql.helium.oauth.DeleteScopeCommand
 import dev.kamiql.helium.oauth.RegisterClientCommand
 import dev.kamiql.helium.oauth.RotateClientSecretCommand
 import dev.kamiql.helium.oauth.UpdateClientCommand
+import dev.kamiql.helium.oauth.UpsertScopeCommand
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
@@ -241,7 +243,44 @@ fun Route.adminRoutes(dependencies: HeliumApiDependencies) = route("/admin") {
 
     get("/scopes") {
         if (!call.requirePermission(dependencies, Permission.ADMIN_CLIENT_READ)) return@get
-        call.respond(dependencies.clients.listScopes().map { ScopeResponse(it.name, it.description, it.implicit) })
+        call.respond(dependencies.clients.listScopes().sortedBy { it.name }.map { it.toResponse() })
+    }
+
+    /*
+     * Scope writes go through a flow rather than checking inline like the role routes below.
+     * The scope catalogue is what clients are registered against and what the consent screen
+     * reads its wording from, so these changes must carry the same reauthentication requirement
+     * and the same audit trail as client registration — inline checks would give them neither.
+     */
+    put("/scopes/{name}") {
+        if (!call.enforceCsrf(dependencies)) return@put
+        val name = call.parameters["name"].orEmpty()
+        val body = call.receive<UpsertScopeRequest>()
+
+        val (_, context) = call.heliumContext(dependencies)
+        val result = dependencies.flowRunner.execute(
+            flow = dependencies.clientAdminFlows.upsertScope,
+            command = UpsertScopeCommand(
+                name = name,
+                description = body.description,
+                implicit = body.implicit,
+            ),
+            context = context,
+        )
+        call.respondFlow(result) { scope -> call.respond(scope.toResponse()) }
+    }
+
+    delete("/scopes/{name}") {
+        if (!call.enforceCsrf(dependencies)) return@delete
+        val name = call.parameters["name"].orEmpty()
+
+        val (_, context) = call.heliumContext(dependencies)
+        val result = dependencies.flowRunner.execute(
+            flow = dependencies.clientAdminFlows.deleteScope,
+            command = DeleteScopeCommand(name),
+            context = context,
+        )
+        call.respondFlow(result) { call.respond(HttpStatusCode.NoContent) }
     }
 
     post("/clients") {

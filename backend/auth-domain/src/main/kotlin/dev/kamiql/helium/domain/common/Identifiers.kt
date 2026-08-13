@@ -59,6 +59,16 @@ value class RecoveryCodeId(val value: UUID) {
 }
 
 @JvmInline
+value class TrustedDeviceId(val value: UUID) {
+    override fun toString(): String = value.toString()
+
+    companion object {
+        fun random(): TrustedDeviceId = TrustedDeviceId(UUID.randomUUID())
+        fun parse(raw: String): TrustedDeviceId? = raw.toUuidOrNull()?.let(::TrustedDeviceId)
+    }
+}
+
+@JvmInline
 value class RefreshTokenFamilyId(val value: UUID) {
     companion object {
         fun random(): RefreshTokenFamilyId = RefreshTokenFamilyId(UUID.randomUUID())

@@ -3,7 +3,14 @@ import { authApi } from "../api/auth.ts"
 import { accountApi } from "../api/account.ts"
 import { setCsrfToken } from "../api/csrf.ts"
 import { ErrorCode, toHeliumError } from "../api/problem.ts"
-import type { LoginRequest, MfaMethod, RegisterRequest, User } from "../api/types.ts"
+import type {
+    LoginRequest,
+    MfaMethod,
+    MfaSecondFactor,
+    MfaVerifyRequest,
+    RegisterRequest,
+    User,
+} from "../api/types.ts"
 
 /**
  * The `mfa_required` challenge, lifted out of the problem response.
@@ -39,7 +46,11 @@ type AuthState = {
     refresh: () => Promise<void>
     /** Resolves to a challenge when a second factor is required, `null` when signed in. */
     login: (request: LoginRequest) => Promise<MfaChallenge | null>
-    completeMfa: (transactionId: string, method: MfaMethod, code: string) => Promise<void>
+    completeMfa: (
+        transactionId: string,
+        factor: MfaSecondFactor,
+        rememberDevice?: boolean,
+    ) => Promise<void>
     register: (request: RegisterRequest) => Promise<void>
     logout: () => Promise<void>
     /** Drops local state without calling the server, for when the server says it is gone. */
@@ -108,11 +119,28 @@ export const useAuthStore = create<AuthState>((set) => ({
         }
     },
 
-    completeMfa: async (transactionId, method, code) => {
+    completeMfa: async (transactionId, factor, rememberDevice) => {
         set({ loading: true })
 
+        // Built per method rather than spread from one object: the endpoint accepts exactly one
+        // of `code` and `webauthn`, and sending the other as `undefined` is not the same thing.
+        const request: MfaVerifyRequest =
+            factor.method === "webauthn"
+                ? {
+                      transaction_id: transactionId,
+                      method: factor.method,
+                      webauthn: factor.assertion,
+                      remember_device: rememberDevice,
+                  }
+                : {
+                      transaction_id: transactionId,
+                      method: factor.method,
+                      code: factor.code,
+                      remember_device: rememberDevice,
+                  }
+
         try {
-            await authApi.verifyMfa({ transaction_id: transactionId, method, code })
+            await authApi.verifyMfa(request)
             const { data } = await authApi.session()
             setCsrfToken(data.csrf_token)
             set({ user: data.user ?? null, loading: false })

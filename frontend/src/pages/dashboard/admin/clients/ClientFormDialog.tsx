@@ -1,5 +1,6 @@
 import {
     Alert,
+    AlertTitle,
     Box,
     Button,
     Chip,
@@ -7,6 +8,7 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
+    Divider,
     FormControl,
     FormControlLabel,
     FormLabel,
@@ -19,7 +21,9 @@ import {
     Stack,
     Switch,
     TextField,
+    Typography,
 } from "@mui/material"
+import type { ReactNode } from "react"
 import { useEffect, useState } from "react"
 import StringListField from "../../../../components/StringListField.tsx"
 import ErrorAlert from "../../../../components/ErrorAlert.tsx"
@@ -47,6 +51,33 @@ type ClientFormDialogProps = {
     onSaved: () => void
     /** Called with the plaintext secret returned by registration — shown once, then gone. */
     onSecretIssued: (secret: ClientSecret) => void
+}
+
+/** A titled group inside the form, so a long registration reads as three short decisions. */
+function FieldGroup({
+    title,
+    description,
+    children,
+}: {
+    title: string
+    description: string
+    children: ReactNode
+}) {
+    return (
+        <Box component="section">
+            <Typography variant="subtitle2" component="h3">
+                {title}
+            </Typography>
+
+            <Typography variant="caption" sx={{ display: "block", color: "text.secondary" }}>
+                {description}
+            </Typography>
+
+            <Stack spacing={2.5} sx={{ mt: 2 }}>
+                {children}
+            </Stack>
+        </Box>
+    )
 }
 
 export default function ClientFormDialog(props: ClientFormDialogProps) {
@@ -142,162 +173,202 @@ function ClientForm({ open, client, onClose, onSaved, onSecretIssued }: ClientFo
             <DialogTitle>{editing ? `Edit ${client?.name}` : "Register application"}</DialogTitle>
 
             <DialogContent>
-                <Stack spacing={2.5} sx={{ mt: 1 }}>
-                    <TextField
-                        fullWidth
-                        size="small"
-                        label="Client ID"
-                        value={clientId}
-                        disabled={editing}
-                        onChange={(event) => setClientId(event.target.value)}
-                        error={Boolean(fieldErrors.client_id)}
-                        helperText={
-                            fieldErrors.client_id
-                                ? describeFieldError(fieldErrors.client_id)
-                                : "Stable identifier the application uses at the token endpoint."
-                        }
-                    />
-
-                    <TextField
-                        fullWidth
-                        size="small"
-                        label="Display name"
-                        value={name}
-                        onChange={(event) => setName(event.target.value)}
-                        error={Boolean(fieldErrors.name)}
-                        helperText={
-                            fieldErrors.name
-                                ? describeFieldError(fieldErrors.name)
-                                : "Shown to users on the consent screen."
-                        }
-                    />
-
-                    <FormControl disabled={editing}>
-                        <FormLabel>Client type</FormLabel>
-                        <RadioGroup
-                            row
-                            value={type}
-                            onChange={(event) => setType(event.target.value as ClientType)}
-                        >
-                            <FormControlLabel
-                                value="PUBLIC"
-                                control={<Radio />}
-                                label="Public (SPA / native — PKCE only)"
-                            />
-                            <FormControlLabel
-                                value="CONFIDENTIAL"
-                                control={<Radio />}
-                                label="Confidential (server-side, holds a secret)"
-                            />
-                        </RadioGroup>
-                    </FormControl>
-
-                    {!editing && type === "CONFIDENTIAL" && (
-                        <Alert severity="info">
-                            A client secret is generated on registration and shown once. It is
-                            stored as a hash and cannot be recovered — only rotated.
-                        </Alert>
-                    )}
-
-                    <StringListField
-                        label="Redirect URI"
-                        values={redirectUris}
-                        onChange={setRedirectUris}
-                        placeholder="https://app.example.com/callback"
-                        error={Boolean(fieldErrors.redirect_uris)}
-                        helperText="Matched exactly — no wildcards, no trailing-slash tolerance. Press Enter to add."
-                    />
-
-                    <FormControl fullWidth size="small">
-                        <InputLabel id="client-scopes-label">Scopes</InputLabel>
-                        <Select
-                            labelId="client-scopes-label"
-                            multiple
-                            value={scopes}
-                            input={<OutlinedInput label="Scopes" />}
-                            onChange={(event) =>
-                                setScopes(
-                                    typeof event.target.value === "string"
-                                        ? event.target.value.split(",")
-                                        : event.target.value,
-                                )
+                <Stack spacing={3} sx={{ mt: 1 }} divider={<Divider flexItem />}>
+                    <FieldGroup
+                        title="Identity"
+                        description="How this application names itself at the token endpoint and to your users."
+                    >
+                        <TextField
+                            fullWidth
+                            size="small"
+                            label="Client ID"
+                            value={clientId}
+                            disabled={editing}
+                            onChange={(event) => setClientId(event.target.value)}
+                            error={Boolean(fieldErrors.client_id)}
+                            helperText={
+                                fieldErrors.client_id
+                                    ? describeFieldError(fieldErrors.client_id)
+                                    : editing
+                                      ? "Fixed after registration — clients and tokens reference it."
+                                      : "Stable identifier the application uses at the token endpoint."
                             }
-                            renderValue={(selected) => (
-                                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                                    {selected.map((scope) => (
-                                        <Chip key={scope} label={scope} size="small" />
-                                    ))}
-                                </Box>
-                            )}
-                        >
-                            {scopeCatalog.map((scope) => (
-                                <MenuItem key={scope.name} value={scope.name}>
-                                    {scope.name} — {scope.description}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
-
-                    <FormControl fullWidth size="small">
-                        <InputLabel id="client-grants-label">Grant types</InputLabel>
-                        <Select
-                            labelId="client-grants-label"
-                            multiple
-                            value={grantTypes}
-                            input={<OutlinedInput label="Grant types" />}
-                            onChange={(event) =>
-                                setGrantTypes(
-                                    (typeof event.target.value === "string"
-                                        ? event.target.value.split(",")
-                                        : event.target.value) as GrantType[],
-                                )
-                            }
-                            renderValue={(selected) => (
-                                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                                    {selected.map((grant) => (
-                                        <Chip key={grant} label={grant} size="small" />
-                                    ))}
-                                </Box>
-                            )}
-                        >
-                            {GRANT_TYPES.map((grant) => (
-                                <MenuItem key={grant} value={grant}>
-                                    {grant}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
-
-                    <StringListField
-                        label="Audience"
-                        values={audiences}
-                        onChange={setAudiences}
-                        placeholder="https://api.example.com"
-                        helperText="Audience values placed in access tokens issued to this client."
-                    />
-
-                    <FormControlLabel
-                        control={
-                            <Switch
-                                checked={skipConsent}
-                                onChange={(event) => setSkipConsent(event.target.checked)}
-                            />
-                        }
-                        label="Skip consent screen (first-party applications only)"
-                    />
-
-                    {editing && (
-                        <FormControlLabel
-                            control={
-                                <Switch
-                                    checked={enabled}
-                                    onChange={(event) => setEnabled(event.target.checked)}
-                                />
-                            }
-                            label="Enabled"
                         />
-                    )}
 
+                        <TextField
+                            fullWidth
+                            size="small"
+                            label="Display name"
+                            value={name}
+                            onChange={(event) => setName(event.target.value)}
+                            error={Boolean(fieldErrors.name)}
+                            helperText={
+                                fieldErrors.name
+                                    ? describeFieldError(fieldErrors.name)
+                                    : "Shown to users on the consent screen."
+                            }
+                        />
+
+                        <FormControl disabled={editing}>
+                            <FormLabel>Client type</FormLabel>
+                            <RadioGroup
+                                value={type}
+                                onChange={(event) => setType(event.target.value as ClientType)}
+                            >
+                                <FormControlLabel
+                                    value="PUBLIC"
+                                    control={<Radio />}
+                                    label="Public (SPA / native — PKCE only)"
+                                />
+                                <FormControlLabel
+                                    value="CONFIDENTIAL"
+                                    control={<Radio />}
+                                    label="Confidential (server-side, holds a secret)"
+                                />
+                            </RadioGroup>
+                        </FormControl>
+
+                        {!editing && type === "CONFIDENTIAL" && (
+                            <Alert severity="info">
+                                A client secret is generated on registration and shown once. It is
+                                stored as a hash and cannot be recovered — only rotated.
+                            </Alert>
+                        )}
+                    </FieldGroup>
+
+                    <FieldGroup
+                        title="Redirect & scopes"
+                        description="Where authorization codes may be delivered, and what the application may ask for."
+                    >
+                        <StringListField
+                            label="Redirect URI"
+                            values={redirectUris}
+                            onChange={setRedirectUris}
+                            placeholder="https://app.example.com/callback"
+                            error={Boolean(fieldErrors.redirect_uris)}
+                            helperText="Matched exactly — no wildcards, no trailing-slash tolerance. Press Enter to add."
+                        />
+
+                        <FormControl fullWidth size="small">
+                            <InputLabel id="client-scopes-label">Scopes</InputLabel>
+                            <Select
+                                labelId="client-scopes-label"
+                                multiple
+                                value={scopes}
+                                input={<OutlinedInput label="Scopes" />}
+                                onChange={(event) =>
+                                    setScopes(
+                                        typeof event.target.value === "string"
+                                            ? event.target.value.split(",")
+                                            : event.target.value,
+                                    )
+                                }
+                                renderValue={(selected) => (
+                                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                                        {selected.map((scope) => (
+                                            <Chip key={scope} label={scope} size="small" />
+                                        ))}
+                                    </Box>
+                                )}
+                            >
+                                {scopeCatalog.map((scope) => (
+                                    <MenuItem key={scope.name} value={scope.name}>
+                                        {scope.name} — {scope.description}
+                                    </MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+
+                        <StringListField
+                            label="Audience"
+                            values={audiences}
+                            onChange={setAudiences}
+                            placeholder="https://api.example.com"
+                            helperText="Audience values placed in access tokens issued to this client."
+                        />
+                    </FieldGroup>
+
+                    <FieldGroup
+                        title="Behaviour"
+                        description="Which grants this client may use, and whether it may bypass the consent screen."
+                    >
+                        <FormControl fullWidth size="small">
+                            <InputLabel id="client-grants-label">Grant types</InputLabel>
+                            <Select
+                                labelId="client-grants-label"
+                                multiple
+                                value={grantTypes}
+                                input={<OutlinedInput label="Grant types" />}
+                                onChange={(event) =>
+                                    setGrantTypes(
+                                        (typeof event.target.value === "string"
+                                            ? event.target.value.split(",")
+                                            : event.target.value) as GrantType[],
+                                    )
+                                }
+                                renderValue={(selected) => (
+                                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                                        {selected.map((grant) => (
+                                            <Chip key={grant} label={grant} size="small" />
+                                        ))}
+                                    </Box>
+                                )}
+                            >
+                                {GRANT_TYPES.map((grant) => (
+                                    <MenuItem key={grant} value={grant}>
+                                        {grant}
+                                    </MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+
+                        <Box>
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={skipConsent}
+                                        onChange={(event) => setSkipConsent(event.target.checked)}
+                                    />
+                                }
+                                label="Skip consent screen (first-party applications only)"
+                            />
+
+                            {skipConsent && (
+                                <Alert severity="warning" sx={{ mt: 1 }}>
+                                    <AlertTitle>Users will never be asked</AlertTitle>
+                                    Every authorization request from this client is granted silently
+                                    with the scopes above. Only enable it for applications you
+                                    operate yourself — a third party with this flag can read the
+                                    granted scopes without the user ever seeing a prompt.
+                                </Alert>
+                            )}
+                        </Box>
+
+                        {editing && (
+                            <Box>
+                                <FormControlLabel
+                                    control={
+                                        <Switch
+                                            checked={enabled}
+                                            onChange={(event) => setEnabled(event.target.checked)}
+                                        />
+                                    }
+                                    label="Enabled"
+                                />
+
+                                <Typography
+                                    variant="caption"
+                                    sx={{ display: "block", color: "text.secondary" }}
+                                >
+                                    Disabling stops new authorizations immediately. Tokens already
+                                    issued are not revoked by this switch.
+                                </Typography>
+                            </Box>
+                        )}
+                    </FieldGroup>
+
+                    {/* Field errors stay visible here: `redirect_uris` has no inline slot of its
+                        own, only the red outline on the chip field. */}
                     {error !== null && <ErrorAlert error={error} />}
                 </Stack>
             </DialogContent>

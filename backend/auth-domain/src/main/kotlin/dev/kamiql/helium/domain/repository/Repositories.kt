@@ -9,6 +9,7 @@ import dev.kamiql.helium.domain.common.EmailAddress
 import dev.kamiql.helium.domain.common.MfaFactorId
 import dev.kamiql.helium.domain.common.SessionId
 import dev.kamiql.helium.domain.common.SigningKeyId
+import dev.kamiql.helium.domain.common.TrustedDeviceId
 import dev.kamiql.helium.domain.common.UserId
 import dev.kamiql.helium.domain.common.Username
 import dev.kamiql.helium.domain.credential.PasswordCredential
@@ -22,9 +23,12 @@ import dev.kamiql.helium.domain.mfa.MfaFactor
 import dev.kamiql.helium.domain.mfa.MfaType
 import dev.kamiql.helium.domain.mfa.RecoveryCode
 import dev.kamiql.helium.domain.mfa.TotpFactor
+import dev.kamiql.helium.domain.mfa.WebAuthnCredential
 import dev.kamiql.helium.domain.policy.Role
 import dev.kamiql.helium.domain.session.Session
 import dev.kamiql.helium.domain.session.SessionRevocationReason
+import dev.kamiql.helium.domain.session.TrustedDevice
+import dev.kamiql.helium.domain.session.TrustedDeviceRevocationReason
 import dev.kamiql.helium.domain.token.AuthorizationCode
 import dev.kamiql.helium.domain.token.RefreshToken
 import dev.kamiql.helium.domain.token.RefreshTokenFamily
@@ -149,12 +153,111 @@ interface SessionRepository {
     suspend fun deleteExpired(before: Instant): Int
 }
 
+interface TrustedDeviceRepository {
+
+    /** Current-generation lookup. Bound to the user so a token cannot cross accounts. */
+    suspend fun findByHash(userId: UserId, tokenHash: String): TrustedDevice?
+
+    /**
+     * Superseded-generation lookup, for reuse detection.
+     *
+     * Also matches already-revoked rows: a copied cookie replayed after the device was revoked
+     * is still the event worth reporting, and dropping it would make reuse detection depend on
+     * the order in which the two parties happen to log in.
+     */
+    suspend fun findByPreviousHash(userId: UserId, tokenHash: String): TrustedDevice?
+
+    /**
+     * Atomically claims a replayed generation as a reported incident.
+     *
+     * Clears `previousTokenHash` and, if the device is still live, revokes it as
+     * [TrustedDeviceRevocationReason.REUSE_DETECTED]. A single conditional UPDATE, so of any
+     * number of replays — concurrent or spread over weeks — exactly one caller sees `true`.
+     *
+     * That is the point: the caller notifies the account owner, and a security mail whose volume
+     * an attacker controls by re-sending a cookie is worse than no mail. Revocation alone cannot
+     * carry this, because a device revoked earlier for an unrelated reason is still worth one
+     * report and would already have `revokedAt` set.
+     *
+     * @return `false` when this generation was already claimed, or never existed.
+     */
+    suspend fun claimReuse(
+        userId: UserId,
+        deviceId: TrustedDeviceId,
+        previousTokenHash: String,
+        at: Instant,
+    ): Boolean
+
+    suspend fun listActiveForUser(userId: UserId, now: Instant): List<TrustedDevice>
+
+    suspend fun insert(device: TrustedDevice): TrustedDevice
+
+    /**
+     * Atomically advances a device to its next token.
+     *
+     * Implemented as a single conditional UPDATE keyed on the *current* hash, so two concurrent
+     * logins presenting the same cookie produce exactly one valid successor. The loser sees
+     * `false` and must fall back to a challenge rather than mint a second live token.
+     *
+     * @return `false` when the row no longer carries [expectedHash] — already rotated, revoked
+     *         or gone.
+     */
+    suspend fun rotate(
+        id: TrustedDeviceId,
+        expectedHash: String,
+        newHash: String,
+        at: Instant,
+    ): Boolean
+
+    /**
+     * Revokes one device, scoped to its owner.
+     *
+     * Keeps `previousTokenHash` for every reason except
+     * [TrustedDeviceRevocationReason.REUSE_DETECTED], which is what lets a cookie copied *before*
+     * an unrelated revocation still be recognised as a replay afterwards. Clearing it wholesale
+     * would make detection depend on whether the owner happened to change their password first.
+     *
+     * For `REUSE_DETECTED` it *is* cleared: the theft is already known and reported, and leaving
+     * the value indexed would let the holder of the stolen cookie trigger a fresh notification on
+     * every retry.
+     *
+     * @return `false` when the device does not exist, belongs to someone else, or was already
+     *         revoked — the caller must not distinguish the three.
+     */
+    suspend fun revoke(
+        userId: UserId,
+        id: TrustedDeviceId,
+        at: Instant,
+        reason: TrustedDeviceRevocationReason,
+    ): Boolean
+
+    /** @return number of devices revoked. */
+    suspend fun revokeAllForUser(
+        userId: UserId,
+        at: Instant,
+        reason: TrustedDeviceRevocationReason,
+    ): Int
+
+    /** Deletes devices whose expiry has passed. Called by the cleanup job. */
+    suspend fun deleteExpired(before: Instant): Int
+}
+
 interface MfaRepository {
     suspend fun listFactors(userId: UserId): List<MfaFactor>
     suspend fun findFactor(id: MfaFactorId): MfaFactor?
     suspend fun findActiveFactorOfType(userId: UserId, type: MfaType): MfaFactor?
     suspend fun insertFactor(factor: MfaFactor): MfaFactor
     suspend fun activateFactor(id: MfaFactorId, at: Instant)
+
+    /**
+     * Renames a factor.
+     *
+     * A label is free text the user picked to tell two authenticators apart; it is never used for
+     * lookup, so there is no uniqueness or normalization concern here. Length is bounded by the
+     * caller, because the limit is a storage detail this port does not want to state.
+     */
+    suspend fun relabelFactor(id: MfaFactorId, label: String)
+
     suspend fun revokeFactor(id: MfaFactorId, at: Instant)
     suspend fun touchFactor(id: MfaFactorId, at: Instant)
 
@@ -177,6 +280,45 @@ interface MfaRepository {
     suspend fun consumeRecoveryCode(userId: UserId, codeHash: String, at: Instant): Boolean
 
     suspend fun countUnusedRecoveryCodes(userId: UserId): Int
+}
+
+/**
+ * Registered passkeys.
+ *
+ * Separate from [MfaRepository] because a credential is owned by an `MfaFactor` rather than
+ * being one: the factor row carries status, label and revocation, and this table carries only
+ * what the authenticator contributed. Revoking a factor cascades here.
+ */
+interface WebAuthnCredentialRepository {
+
+    /** Active and pending credentials, used to build `excludeCredentials` and `allowCredentials`. */
+    suspend fun listForUser(userId: UserId): List<WebAuthnCredential>
+
+    suspend fun findByFactor(factorId: MfaFactorId): WebAuthnCredential?
+
+    /**
+     * Looks up the credential an assertion names.
+     *
+     * Scoped to [userId] on purpose: a credential id arrives from the client, and resolving it
+     * globally would let an assertion produced for one account be presented against another.
+     */
+    suspend fun findByCredentialId(userId: UserId, credentialId: ByteArray): WebAuthnCredential?
+
+    suspend fun insert(credential: WebAuthnCredential)
+
+    /**
+     * Conditionally advances the signature counter.
+     *
+     * @return `false` when [counter] does not exceed the stored value. That is the
+     *         cloned-authenticator signal, and — as with the TOTP step guard — a single
+     *         conditional UPDATE is what stops two concurrent assertions both succeeding with
+     *         the same counter. Whether a non-advancing counter is fatal is the caller's
+     *         decision, not this method's: many authenticators legitimately always report `0`.
+     */
+    suspend fun tryAdvanceSignatureCounter(factorId: MfaFactorId, counter: Long, at: Instant): Boolean
+
+    /** Records use without touching the counter, for authenticators that do not keep one. */
+    suspend fun touch(factorId: MfaFactorId, at: Instant)
 }
 
 /** One-time email verification, email change and password reset tokens. Stored hashed. */
@@ -259,6 +401,21 @@ interface ClientRepository {
     suspend fun updateSecret(clientId: ClientId, secretHash: String, at: Instant)
     suspend fun delete(clientId: ClientId): Boolean
     suspend fun listScopes(): List<Scope>
+    suspend fun findScope(name: String): Scope?
+
+    /** Creates or replaces a scope. Never changes `builtIn` or the original creation time. */
+    suspend fun upsertScope(scope: Scope, at: Instant): Scope
+
+    suspend fun deleteScope(name: String): Boolean
+
+    /**
+     * How many registered clients still list this scope.
+     *
+     * `oauth_client_scopes.scope` cascades on delete, so dropping a scope that is still in use
+     * would strip it from those clients without a word and only surface later as `invalid_scope`
+     * on an authorization request. The delete path refuses instead.
+     */
+    suspend fun clientsUsingScope(name: String): Long
 }
 
 interface ConsentRepository {

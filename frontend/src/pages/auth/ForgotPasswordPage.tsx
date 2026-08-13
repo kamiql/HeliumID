@@ -1,5 +1,5 @@
-import { Button, Stack, Typography } from "@mui/material"
-import LockResetOutlinedIcon from "@mui/icons-material/LockResetOutlined"
+import { Box, Button, Stack, Typography } from "@mui/material"
+import MarkEmailReadOutlinedIcon from "@mui/icons-material/MarkEmailReadOutlined"
 import { useState } from "react"
 import { Link } from "react-router"
 import AuthCard from "../../components/auth/AuthCard.tsx"
@@ -30,62 +30,78 @@ export default function ForgotPasswordPage() {
         }
     }
 
+    if (sent) {
+        return (
+            <AuthCard
+                statusIcon={<MarkEmailReadOutlinedIcon />}
+                statusTone="success"
+                title="Check your inbox"
+            >
+                <Stack spacing={3}>
+                    <Typography sx={{ color: "text.secondary", textAlign: "center" }}>
+                        If an account exists for{" "}
+                        <Box component="strong" sx={{ wordBreak: "break-word" }}>
+                            {email}
+                        </Box>
+                        , a reset link is on its way. The link expires shortly and can be used
+                        once.
+                    </Typography>
+
+                    <Typography variant="body2" sx={{ color: "text.secondary", textAlign: "center" }}>
+                        Nothing after a few minutes? Check your spam folder, then try again with
+                        the address you signed up with.
+                    </Typography>
+
+                    <Button component={Link} to="/login" fullWidth variant="contained">
+                        Back to sign in
+                    </Button>
+                </Stack>
+            </AuthCard>
+        )
+    }
+
     return (
         <AuthCard
-            icon={<LockResetOutlinedIcon />}
             title="Reset password"
-            iconColor={sent ? "success.main" : "primary.main"}
+            subtitle="Enter the email address on your account and we will send you a link to choose a new password."
         >
-            <Stack spacing={2}>
-                {sent ? (
-                    <>
-                        <Typography sx={{ color: "text.secondary", textAlign: "center" }}>
-                            If an account exists for <strong>{email}</strong>, a reset link is on
-                            its way. The link expires shortly and can be used once.
-                        </Typography>
+            <Box
+                component="form"
+                onSubmit={(event) => {
+                    event.preventDefault()
+                    void handleSubmit()
+                }}
+            >
+                <Stack spacing={2}>
+                    <EmailField
+                        fullWidth
+                        required
+                        autoFocus
+                        label="Email"
+                        autoComplete="email"
+                        value={email}
+                        onType={(value) => {
+                            setEmail(value)
+                            setError(null)
+                        }}
+                    />
 
-                        <Button component={Link} to="/login" fullWidth variant="contained">
-                            Back to sign in
-                        </Button>
-                    </>
-                ) : (
-                    <>
-                        <Typography sx={{ color: "text.secondary" }}>
-                            Enter the email address on your account and we will send you a link to
-                            choose a new password.
-                        </Typography>
+                    {error !== null && <ErrorAlert error={error} />}
 
-                        <EmailField
-                            fullWidth
-                            required
-                            autoFocus
-                            label="Email"
-                            autoComplete="email"
-                            value={email}
-                            onType={(value) => {
-                                setEmail(value)
-                                setError(null)
-                            }}
-                        />
+                    <Button
+                        type="submit"
+                        fullWidth
+                        variant="contained"
+                        disabled={loading || !email}
+                    >
+                        Send reset link
+                    </Button>
 
-                        {error !== null && <ErrorAlert error={error} />}
-
-                        <Button
-                            fullWidth
-                            variant="contained"
-                            disabled={loading || !email}
-                            onClick={() => void handleSubmit()}
-                            sx={{ py: 1.2 }}
-                        >
-                            Send reset link
-                        </Button>
-
-                        <Button component={Link} to="/login" fullWidth variant="text">
-                            Back to sign in
-                        </Button>
-                    </>
-                )}
-            </Stack>
+                    <Button component={Link} to="/login" fullWidth variant="text">
+                        Back to sign in
+                    </Button>
+                </Stack>
+            </Box>
         </AuthCard>
     )
 }

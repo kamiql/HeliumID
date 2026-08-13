@@ -1,9 +1,11 @@
 import {
     Box,
-    Card,
+    Button,
     Chip,
     Collapse,
+    Divider,
     IconButton,
+    Link as MuiLink,
     Stack,
     Table,
     TableBody,
@@ -13,16 +15,29 @@ import {
     TablePagination,
     TableRow,
     TextField,
+    Tooltip,
     Typography,
 } from "@mui/material"
-import { KeyboardArrowDown, KeyboardArrowUp } from "@mui/icons-material"
+import { KeyboardArrowDown, KeyboardArrowUp, ManageSearch } from "@mui/icons-material"
 import { Fragment, useEffect, useState } from "react"
 import { Link } from "react-router"
 import PageHeader from "../../../../components/dashboard/PageHeader.tsx"
 import ErrorAlert from "../../../../components/ErrorAlert.tsx"
+import DefinitionList from "../../../../components/ui/DefinitionList.tsx"
+import Section from "../../../../components/ui/Section.tsx"
+import { EmptyState, TableSkeleton, TableStateRow } from "../../../../components/ui/StateView.tsx"
 import { adminApi } from "../../../../api/admin.ts"
 import { formatDateTime, humanize } from "../../../../lib/format.ts"
+import { MONO_FONT } from "../../../../lib/theme.ts"
 import type { AuditRecord } from "../../../../api/types.ts"
+
+/** Hidden columns keep their cells, so the expansion row's `colSpan` never has to change. */
+const COLUMN_COUNT = 7
+
+/** Enough of a UUID to tell two rows apart, without a column of unreadable hex. */
+function shorten(id: string): string {
+    return id.length > 12 ? `${id.slice(0, 8)}…` : id
+}
 
 export default function AdminAuditPage() {
     const [eventType, setEventType] = useState("")
@@ -35,6 +50,9 @@ export default function AdminAuditPage() {
     const [total, setTotal] = useState(0)
     const [expanded, setExpanded] = useState<string | null>(null)
     const [error, setError] = useState<unknown>(null)
+    const [loading, setLoading] = useState(true)
+    // Bumped by the retry button so the effect re-runs with the identical query.
+    const [reloadToken, setReloadToken] = useState(0)
 
     useEffect(() => {
         const handle = window.setTimeout(() => {
@@ -47,6 +65,9 @@ export default function AdminAuditPage() {
     useEffect(() => {
         let active = true
 
+        // `loading` starts true and the retry button raises it again. Not raising it on every
+        // filter change is deliberate: the rows stay readable while a new query runs, and the
+        // app shell's progress bar carries the in-flight signal.
         adminApi
             .audit({
                 event_type: debounced.eventType || undefined,
@@ -59,185 +80,335 @@ export default function AdminAuditPage() {
                 setRecords(data.items)
                 setTotal(data.total)
                 setError(null)
+                setLoading(false)
             })
             .catch((caught: unknown) => {
-                if (active) setError(caught)
+                if (!active) return
+                setError(caught)
+                setLoading(false)
             })
 
         return () => {
             active = false
         }
-    }, [debounced, page, rowsPerPage])
+    }, [debounced, page, rowsPerPage, reloadToken])
+
+    const filtered = eventType.trim().length > 0 || userId.trim().length > 0
+
+    const clearAll = () => {
+        setEventType("")
+        setUserId("")
+    }
 
     return (
         <Stack spacing={3} sx={{ maxWidth: 1200, mx: "auto" }}>
             <PageHeader
                 title="Audit log"
                 description="Security events recorded by the identity server."
+                breadcrumbs={[{ label: "Admin", to: "/admin" }]}
+                meta={
+                    !loading &&
+                    error === null && (
+                        <Chip
+                            size="small"
+                            variant="outlined"
+                            label={`${total} ${total === 1 ? "event" : "events"}`}
+                        />
+                    )
+                }
             />
 
-            <Card>
-                <Box sx={{ p: 2 }}>
-                    <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+            <Section
+                title="Events"
+                description="Newest first. Expand a row for its request ID and recorded metadata."
+                disableBodyPadding
+                actions={
+                    filtered && (
+                        <Button size="small" variant="text" onClick={clearAll}>
+                            Clear filters
+                        </Button>
+                    )
+                }
+            >
+                <Box sx={{ p: { xs: 2, sm: 2.5 } }}>
+                    <Box
+                        sx={{
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                            gap: 2,
+                        }}
+                    >
                         <TextField
                             size="small"
                             fullWidth
                             label="Event type"
-                            placeholder="e.g. LOGIN_SUCCEEDED"
+                            placeholder="LOGIN_SUCCEEDED"
                             value={eventType}
                             onChange={(event) => setEventType(event.target.value)}
+                            helperText="Exact event name in upper snake case, e.g. LOGIN_SUCCEEDED or MFA_CHALLENGE_FAILED."
                         />
 
                         <TextField
                             size="small"
                             fullWidth
                             label="Subject user ID"
-                            placeholder="UUID"
+                            placeholder="6f1c2e5a-8b4d-4f2e-9a10-7c3d5e8b1f04"
                             value={userId}
                             onChange={(event) => setUserId(event.target.value)}
+                            helperText="The account the event was about, as a UUID. Copy it from the user's detail page."
+                            sx={{ "& input": { fontFamily: MONO_FONT } }}
                         />
-                    </Stack>
+                    </Box>
                 </Box>
 
+                <Divider />
+
                 {error !== null && (
-                    <Box sx={{ px: 2, pb: 2 }}>
-                        <ErrorAlert error={error} />
+                    <Box sx={{ p: 2 }}>
+                        <ErrorAlert
+                            error={error}
+                            onRetry={() => {
+                                setLoading(true)
+                                setReloadToken((n) => n + 1)
+                            }}
+                        />
                     </Box>
                 )}
 
-                <TableContainer>
+                <TableContainer sx={{ overflowX: "auto" }}>
                     <Table size="small">
                         <TableHead>
                             <TableRow>
-                                <TableCell width={40} />
+                                <TableCell width={48} />
                                 <TableCell>When</TableCell>
                                 <TableCell>Event</TableCell>
                                 <TableCell>Outcome</TableCell>
-                                <TableCell>Actor</TableCell>
-                                <TableCell>Subject</TableCell>
-                                <TableCell>Client</TableCell>
+                                <TableCell sx={{ display: { xs: "none", lg: "table-cell" } }}>
+                                    Actor
+                                </TableCell>
+                                <TableCell sx={{ display: { xs: "none", md: "table-cell" } }}>
+                                    Subject
+                                </TableCell>
+                                <TableCell sx={{ display: { xs: "none", lg: "table-cell" } }}>
+                                    Client
+                                </TableCell>
                             </TableRow>
                         </TableHead>
 
                         <TableBody>
-                            {records.map((record) => {
-                                const open = expanded === record.id
-                                const metadata = Object.entries(record.metadata)
+                            {loading && <TableSkeleton rows={6} columns={COLUMN_COUNT} />}
 
-                                return (
-                                    <Fragment key={record.id}>
-                                        <TableRow hover>
-                                            <TableCell>
-                                                <IconButton
-                                                    size="small"
-                                                    onClick={() => setExpanded(open ? null : record.id)}
+                            {!loading &&
+                                records.map((record) => {
+                                    const open = expanded === record.id
+                                    const metadata = Object.entries(record.metadata)
+
+                                    return (
+                                        <Fragment key={record.id}>
+                                            <TableRow hover>
+                                                <TableCell>
+                                                    <IconButton
+                                                        size="small"
+                                                        aria-label={
+                                                            open
+                                                                ? `Hide details of ${humanize(record.event_type)}`
+                                                                : `Show details of ${humanize(record.event_type)}`
+                                                        }
+                                                        aria-expanded={open}
+                                                        onClick={() =>
+                                                            setExpanded(open ? null : record.id)
+                                                        }
+                                                    >
+                                                        {open ? (
+                                                            <KeyboardArrowUp fontSize="small" />
+                                                        ) : (
+                                                            <KeyboardArrowDown fontSize="small" />
+                                                        )}
+                                                    </IconButton>
+                                                </TableCell>
+
+                                                <TableCell sx={{ whiteSpace: "nowrap" }}>
+                                                    {formatDateTime(record.created_at)}
+                                                </TableCell>
+
+                                                <TableCell>{humanize(record.event_type)}</TableCell>
+
+                                                <TableCell>
+                                                    <Chip
+                                                        size="small"
+                                                        variant="outlined"
+                                                        label={record.outcome.toLowerCase()}
+                                                        color={
+                                                            record.outcome.toUpperCase() === "SUCCESS"
+                                                                ? "success"
+                                                                : "error"
+                                                        }
+                                                    />
+                                                </TableCell>
+
+                                                <TableCell
+                                                    sx={{
+                                                        display: { xs: "none", lg: "table-cell" },
+                                                        fontFamily: MONO_FONT,
+                                                        fontSize: "0.75rem",
+                                                        whiteSpace: "nowrap",
+                                                    }}
                                                 >
-                                                    {open ? (
-                                                        <KeyboardArrowUp fontSize="small" />
+                                                    {record.actor_user_id ? (
+                                                        <Tooltip title={record.actor_user_id}>
+                                                            <Box component="span" tabIndex={0}>
+                                                                {shorten(record.actor_user_id)}
+                                                            </Box>
+                                                        </Tooltip>
                                                     ) : (
-                                                        <KeyboardArrowDown fontSize="small" />
+                                                        "—"
                                                     )}
-                                                </IconButton>
-                                            </TableCell>
+                                                </TableCell>
 
-                                            <TableCell sx={{ whiteSpace: "nowrap" }}>
-                                                {formatDateTime(record.created_at)}
-                                            </TableCell>
+                                                <TableCell
+                                                    sx={{
+                                                        display: { xs: "none", md: "table-cell" },
+                                                        fontFamily: MONO_FONT,
+                                                        fontSize: "0.75rem",
+                                                        whiteSpace: "nowrap",
+                                                    }}
+                                                >
+                                                    {record.subject_user_id ? (
+                                                        <Tooltip title={record.subject_user_id}>
+                                                            <MuiLink
+                                                                component={Link}
+                                                                to={`/admin/users/${record.subject_user_id}`}
+                                                                sx={{ fontFamily: MONO_FONT }}
+                                                            >
+                                                                {shorten(record.subject_user_id)}
+                                                            </MuiLink>
+                                                        </Tooltip>
+                                                    ) : (
+                                                        "—"
+                                                    )}
+                                                </TableCell>
 
-                                            <TableCell>{humanize(record.event_type)}</TableCell>
+                                                <TableCell
+                                                    sx={{
+                                                        display: { xs: "none", lg: "table-cell" },
+                                                        whiteSpace: "nowrap",
+                                                    }}
+                                                >
+                                                    {record.client_id ?? "—"}
+                                                </TableCell>
+                                            </TableRow>
 
-                                            <TableCell>
-                                                <Chip
+                                            <TableRow>
+                                                <TableCell
+                                                    colSpan={COLUMN_COUNT}
+                                                    sx={{
+                                                        py: 0,
+                                                        borderBottom: open ? undefined : "none",
+                                                    }}
+                                                >
+                                                    <Collapse in={open} unmountOnExit>
+                                                        <Box sx={{ py: 2 }}>
+                                                            <DefinitionList
+                                                                columns={2}
+                                                                items={[
+                                                                    {
+                                                                        label: "Request ID",
+                                                                        value: record.request_id,
+                                                                        mono: true,
+                                                                    },
+                                                                    {
+                                                                        label: "Actor",
+                                                                        value:
+                                                                            record.actor_user_id ??
+                                                                            "System",
+                                                                        mono: Boolean(
+                                                                            record.actor_user_id,
+                                                                        ),
+                                                                    },
+                                                                    {
+                                                                        label: "Subject",
+                                                                        value:
+                                                                            record.subject_user_id ??
+                                                                            "—",
+                                                                        mono: Boolean(
+                                                                            record.subject_user_id,
+                                                                        ),
+                                                                    },
+                                                                    {
+                                                                        label: "Client",
+                                                                        value: record.client_id ?? "—",
+                                                                        mono: Boolean(record.client_id),
+                                                                    },
+                                                                ]}
+                                                            />
+
+                                                            <Typography
+                                                                variant="subtitle2"
+                                                                component="h3"
+                                                                sx={{ mt: 3 }}
+                                                            >
+                                                                Metadata
+                                                            </Typography>
+
+                                                            {metadata.length === 0 ? (
+                                                                <Typography
+                                                                    variant="body2"
+                                                                    sx={{
+                                                                        mt: 0.5,
+                                                                        color: "text.secondary",
+                                                                    }}
+                                                                >
+                                                                    No metadata recorded for this
+                                                                    event.
+                                                                </Typography>
+                                                            ) : (
+                                                                <DefinitionList
+                                                                    sx={{ mt: 1.5 }}
+                                                                    columns={2}
+                                                                    items={metadata.map(
+                                                                        ([key, value]) => ({
+                                                                            label: humanize(key),
+                                                                            value,
+                                                                            mono: true,
+                                                                        }),
+                                                                    )}
+                                                                />
+                                                            )}
+                                                        </Box>
+                                                    </Collapse>
+                                                </TableCell>
+                                            </TableRow>
+                                        </Fragment>
+                                    )
+                                })}
+
+                            {!loading && error === null && records.length === 0 && (
+                                <TableStateRow columns={COLUMN_COUNT}>
+                                    <EmptyState
+                                        icon={ManageSearch}
+                                        title={
+                                            filtered
+                                                ? "No events match these filters"
+                                                : "No audit events recorded"
+                                        }
+                                        description={
+                                            filtered
+                                                ? "Event type is matched exactly, and the subject must be a full user ID — a partial UUID will never match."
+                                                : "Security events appear here as soon as the server records one."
+                                        }
+                                        action={
+                                            filtered && (
+                                                <Button
                                                     size="small"
                                                     variant="outlined"
-                                                    label={record.outcome.toLowerCase()}
-                                                    color={
-                                                        record.outcome.toUpperCase() === "SUCCESS"
-                                                            ? "success"
-                                                            : "error"
-                                                    }
-                                                />
-                                            </TableCell>
-
-                                            <TableCell sx={{ fontFamily: "monospace", fontSize: "0.75rem" }}>
-                                                {record.actor_user_id ?? "—"}
-                                            </TableCell>
-
-                                            <TableCell sx={{ fontFamily: "monospace", fontSize: "0.75rem" }}>
-                                                {record.subject_user_id ? (
-                                                    <Link to={`/admin/users/${record.subject_user_id}`}>
-                                                        {record.subject_user_id}
-                                                    </Link>
-                                                ) : (
-                                                    "—"
-                                                )}
-                                            </TableCell>
-
-                                            <TableCell>{record.client_id ?? "—"}</TableCell>
-                                        </TableRow>
-
-                                        <TableRow>
-                                            <TableCell colSpan={7} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
-                                                <Collapse in={open} unmountOnExit>
-                                                    <Box sx={{ py: 2 }}>
-                                                        <Typography
-                                                            variant="caption"
-                                                            sx={{ color: "text.secondary" }}
-                                                        >
-                                                            Request {record.request_id}
-                                                        </Typography>
-
-                                                        {metadata.length === 0 ? (
-                                                            <Typography variant="body2">
-                                                                No metadata recorded.
-                                                            </Typography>
-                                                        ) : (
-                                                            <Box
-                                                                sx={{
-                                                                    mt: 1,
-                                                                    display: "grid",
-                                                                    gridTemplateColumns: {
-                                                                        xs: "1fr",
-                                                                        sm: "auto 1fr",
-                                                                    },
-                                                                    columnGap: 2,
-                                                                    rowGap: 0.5,
-                                                                }}
-                                                            >
-                                                                {metadata.map(([key, value]) => (
-                                                                    <Fragment key={key}>
-                                                                        <Typography
-                                                                            variant="body2"
-                                                                            sx={{ fontWeight: 600 }}
-                                                                        >
-                                                                            {key}
-                                                                        </Typography>
-                                                                        <Typography
-                                                                            variant="body2"
-                                                                            sx={{ wordBreak: "break-all" }}
-                                                                        >
-                                                                            {value}
-                                                                        </Typography>
-                                                                    </Fragment>
-                                                                ))}
-                                                            </Box>
-                                                        )}
-                                                    </Box>
-                                                </Collapse>
-                                            </TableCell>
-                                        </TableRow>
-                                    </Fragment>
-                                )
-                            })}
-
-                            {records.length === 0 && (
-                                <TableRow>
-                                    <TableCell colSpan={7}>
-                                        <Typography variant="body2" sx={{ color: "text.secondary", py: 2 }}>
-                                            No audit records matched.
-                                        </Typography>
-                                    </TableCell>
-                                </TableRow>
+                                                    onClick={clearAll}
+                                                >
+                                                    Clear filters
+                                                </Button>
+                                            )
+                                        }
+                                    />
+                                </TableStateRow>
                             )}
                         </TableBody>
                     </Table>
@@ -255,7 +426,7 @@ export default function AdminAuditPage() {
                     }}
                     rowsPerPageOptions={[25, 50, 100, 200]}
                 />
-            </Card>
+            </Section>
         </Stack>
     )
 }

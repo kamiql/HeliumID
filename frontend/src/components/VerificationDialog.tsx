@@ -1,15 +1,17 @@
 import {
     Button,
+    CircularProgress,
     Dialog,
     DialogActions,
     DialogContent,
+    DialogContentText,
     DialogTitle,
     Stack,
     TextField,
-    Typography,
 } from "@mui/material"
-import { useState } from "react"
-import { describeError } from "../api/problem.ts"
+import { useId, useState } from "react"
+import ErrorAlert from "./ErrorAlert.tsx"
+import { MONO_FONT } from "../lib/theme.ts"
 
 type VerificationDialogProps = {
     open: boolean
@@ -38,32 +40,44 @@ export default function VerificationDialog({
     onCompleted,
 }: VerificationDialogProps) {
     const [token, setToken] = useState("")
-    const [error, setError] = useState("")
+    const [error, setError] = useState<unknown>(null)
     const [loading, setLoading] = useState(false)
+
+    const titleId = useId()
+    const descriptionId = useId()
 
     const handleSubmit = async () => {
         if (loading || token.trim().length === 0) return
 
         try {
             setLoading(true)
-            setError("")
+            setError(null)
             await onSubmit(token.trim())
             setToken("")
             onCompleted()
         } catch (caught) {
-            setError(describeError(caught))
+            setError(caught)
         } finally {
             setLoading(false)
         }
     }
 
     return (
-        <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-            <DialogTitle>{title}</DialogTitle>
+        <Dialog
+            open={open}
+            onClose={onClose}
+            fullWidth
+            maxWidth="xs"
+            aria-labelledby={titleId}
+            aria-describedby={descriptionId}
+        >
+            <DialogTitle id={titleId}>{title}</DialogTitle>
 
             <DialogContent>
-                <Stack spacing={3}>
-                    <Typography sx={{ color: "text.secondary" }}>{description}</Typography>
+                <Stack spacing={2.5}>
+                    <DialogContentText id={descriptionId} variant="body2">
+                        {description}
+                    </DialogContentText>
 
                     <TextField
                         fullWidth
@@ -72,18 +86,18 @@ export default function VerificationDialog({
                         value={token}
                         onChange={(event) => {
                             setToken(event.target.value)
-                            setError("")
+                            setError(null)
                         }}
                         onKeyDown={(event) => {
                             if (event.key === "Enter") void handleSubmit()
                         }}
+                        // The token is a long random string, so a fixed-width face makes a
+                        // mistyped or half-pasted character visible.
+                        slotProps={{ input: { sx: { fontFamily: MONO_FONT } } }}
+                        helperText="Nothing in your inbox? Check the spam folder — the code expires after a short time, and you can request a new one."
                     />
 
-                    {error && (
-                        <Typography color="error" variant="body2">
-                            {error}
-                        </Typography>
-                    )}
+                    {error !== null && <ErrorAlert error={error} />}
                 </Stack>
             </DialogContent>
 
@@ -96,6 +110,7 @@ export default function VerificationDialog({
                     variant="contained"
                     onClick={() => void handleSubmit()}
                     disabled={loading || token.trim().length === 0}
+                    startIcon={loading ? <CircularProgress size={16} color="inherit" /> : undefined}
                 >
                     Confirm
                 </Button>

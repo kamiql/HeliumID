@@ -1,5 +1,5 @@
-import { Alert, Button, Stack, TextField, Typography } from "@mui/material"
-import LockResetOutlinedIcon from "@mui/icons-material/LockResetOutlined"
+import { Alert, Box, Button, Stack, TextField, Typography } from "@mui/material"
+import CheckCircleOutlinedIcon from "@mui/icons-material/CheckCircleOutlined"
 import { useState } from "react"
 import { Link, useSearchParams } from "react-router"
 import AuthCard from "../../components/auth/AuthCard.tsx"
@@ -50,8 +50,12 @@ export default function ResetPasswordPage() {
 
     if (done) {
         return (
-            <AuthCard icon={<LockResetOutlinedIcon />} title="Password set" iconColor="success.main">
-                <Stack spacing={2}>
+            <AuthCard
+                statusIcon={<CheckCircleOutlinedIcon />}
+                statusTone="success"
+                title="Password set"
+            >
+                <Stack spacing={3}>
                     <Typography sx={{ color: "text.secondary", textAlign: "center" }}>
                         Your password has been changed and every other session was signed out.
                         Sign in with your new password.
@@ -65,78 +69,91 @@ export default function ResetPasswordPage() {
         )
     }
 
+    const serverPasswordReason = fieldErrors.new_password ?? fieldErrors.password
+
     return (
-        <AuthCard icon={<LockResetOutlinedIcon />} title="New password">
-            <Stack spacing={2}>
-                {!searchParams.get("token") && (
-                    <>
-                        <Alert severity="info">
-                            Paste the reset code from your email to continue.
-                        </Alert>
+        <AuthCard title="New password" subtitle="Choose a password you have not used here before.">
+            <Box
+                component="form"
+                onSubmit={(event) => {
+                    event.preventDefault()
+                    void handleSubmit()
+                }}
+            >
+                <Stack spacing={2}>
+                    {!searchParams.get("token") && (
+                        <>
+                            <Alert severity="info">
+                                Paste the reset code from your email to continue.
+                            </Alert>
 
-                        <TextField
-                            fullWidth
-                            label="Reset code"
-                            value={token}
-                            onChange={(event) => {
-                                setToken(event.target.value)
-                                setError(null)
-                            }}
-                        />
-                    </>
-                )}
+                            <TextField
+                                fullWidth
+                                label="Reset code"
+                                value={token}
+                                onChange={(event) => {
+                                    setToken(event.target.value)
+                                    setError(null)
+                                }}
+                            />
+                        </>
+                    )}
 
-                <PasswordField
-                    fullWidth
-                    required
-                    autoFocus
-                    label="New password"
-                    autoComplete="new-password"
-                    value={password}
-                    onType={(value) => {
-                        setPassword(value)
-                        setError(null)
-                    }}
-                    validate
-                    error={Boolean(fieldErrors.new_password || fieldErrors.password)}
-                />
+                    <PasswordField
+                        fullWidth
+                        required
+                        autoFocus
+                        label="New password"
+                        autoComplete="new-password"
+                        value={password}
+                        onType={(value) => {
+                            setPassword(value)
+                            setError(null)
+                        }}
+                        validate
+                        error={Boolean(serverPasswordReason)}
+                    />
 
-                {(fieldErrors.new_password || fieldErrors.password) && (
-                    <Alert severity="error">
-                        {describeFieldError(fieldErrors.new_password ?? fieldErrors.password)}
-                    </Alert>
-                )}
+                    {/*
+                     * Kept because the reason comes from the server — a breach hit or a policy
+                     * rule the checklist above cannot evaluate on its own.
+                     */}
+                    {serverPasswordReason && (
+                        <Alert severity="error">{describeFieldError(serverPasswordReason)}</Alert>
+                    )}
 
-                <PasswordField
-                    fullWidth
-                    required
-                    label="Confirm new password"
-                    autoComplete="new-password"
-                    value={confirm}
-                    onType={(value) => {
-                        setConfirm(value)
-                        setError(null)
-                    }}
-                    matches={password}
-                    validate
-                />
+                    <PasswordField
+                        fullWidth
+                        required
+                        label="Confirm new password"
+                        autoComplete="new-password"
+                        value={confirm}
+                        onType={(value) => {
+                            setConfirm(value)
+                            setError(null)
+                        }}
+                        matches={password}
+                        validate
+                    />
 
-                {error !== null && <ErrorAlert error={error} hideFieldErrors />}
+                    {error !== null && <ErrorAlert error={error} hideFieldErrors />}
 
-                <Button
-                    fullWidth
-                    variant="contained"
-                    disabled={loading || !token || !policyMet || !password || password !== confirm}
-                    onClick={() => void handleSubmit()}
-                    sx={{ py: 1.2 }}
-                >
-                    Set new password
-                </Button>
+                    <Button
+                        type="submit"
+                        fullWidth
+                        variant="contained"
+                        disabled={
+                            loading || !token || !policyMet || !password || password !== confirm
+                        }
+                    >
+                        Set new password
+                    </Button>
 
-                <Button component={Link} to="/login" fullWidth variant="text">
-                    Back to sign in
-                </Button>
-            </Stack>
+                    <Button component={Link} to="/login" fullWidth variant="text">
+                        Back to sign in
+                    </Button>
+                </Stack>
+            </Box>
         </AuthCard>
     )
 }

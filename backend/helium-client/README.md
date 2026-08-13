@@ -17,10 +17,22 @@ the only published artifact, so its surface is a contract: it does not depend on
 
 ```kotlin
 // build.gradle.kts
+repositories {
+    mavenLocal()   // until the artifact is published to a shared repository
+    mavenCentral() // Ktor, Nimbus and the other transitives
+}
+
 dependencies {
-    implementation("dev.kamiql.helium:helium-client:2.0.0")
+    implementation("dev.kamiql.helium:helium-client:2.0.0-SNAPSHOT")
 }
 ```
+
+Publish it first with `./gradlew :helium-client:publishToMavenLocal` from `backend/`. The version
+is `2.0.0-SNAPSHOT` unless the build sets `-PheliumVersion=...`.
+
+Your build must target **JVM 25 or newer**: the published Gradle module metadata records
+`org.gradle.jvm.version = 25`, and a lower toolchain fails at variant resolution rather than with
+a missing-artifact error.
 
 It brings `ktor-client-core`, `ktor-server-core` and `ktor-server-auth` transitively, plus
 Nimbus for all JOSE work. A CIO client engine ships as a runtime dependency so

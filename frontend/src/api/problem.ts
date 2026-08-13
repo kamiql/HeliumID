@@ -67,6 +67,21 @@ export const ErrorCode = {
     NETWORK: "network_error",
     /** Synthetic: a response we could not parse as problem+json. */
     UNKNOWN: "unknown_error",
+    /*
+     * Synthetic, raised by `lib/webauthn.ts`. A passkey ceremony fails in the browser, before
+     * or instead of a request, but the UI should not need a second error vocabulary for it —
+     * so the ceremony reports itself as a [HeliumError] like everything else.
+     */
+    /** The browser has no WebAuthn API, or the authenticator refused the parameters. */
+    WEBAUTHN_UNSUPPORTED: "webauthn_unsupported",
+    /** The page is not a secure context; `navigator.credentials` is unavailable off HTTPS. */
+    WEBAUTHN_INSECURE_CONTEXT: "webauthn_insecure_context",
+    /** The user dismissed the prompt or it timed out — a decision, not a failure. */
+    WEBAUTHN_CANCELLED: "webauthn_cancelled",
+    /** The authenticator is already enrolled on this account. */
+    WEBAUTHN_ALREADY_REGISTERED: "webauthn_already_registered",
+    /** The ceremony failed for a reason the browser did not make actionable. */
+    WEBAUTHN_FAILED: "webauthn_failed",
 } as const
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -168,6 +183,13 @@ const MESSAGES: Record<string, string> = {
     [ErrorCode.IDEMPOTENCY_CONFLICT]: "That request was already made with different data.",
     [ErrorCode.NETWORK]: "Could not reach the server. Check your connection.",
     [ErrorCode.UNKNOWN]: "Something went wrong. Please try again.",
+    [ErrorCode.WEBAUTHN_UNSUPPORTED]: "This browser cannot use passkeys or security keys.",
+    [ErrorCode.WEBAUTHN_INSECURE_CONTEXT]:
+        "Passkeys need a secure connection. Open this page over HTTPS and try again.",
+    [ErrorCode.WEBAUTHN_CANCELLED]: "The passkey prompt was dismissed or timed out.",
+    [ErrorCode.WEBAUTHN_ALREADY_REGISTERED]:
+        "That authenticator is already registered on this account.",
+    [ErrorCode.WEBAUTHN_FAILED]: "Your device could not complete the passkey request.",
 }
 
 export function describeError(error: unknown): string {
@@ -199,6 +221,10 @@ const FIELD_REASONS: Record<string, string> = {
     contains_identifier: "Must not contain your username or email.",
     invalid: "Not a valid value.",
     blank: "This field is required.",
+    missing: "This field is required.",
+    /* `/v1/auth/mfa/verify` accepts exactly one factor, and it has to match the chosen method. */
+    ambiguous: "More than one value was sent.",
+    method_mismatch: "Does not match the selected verification method.",
     taken: "Already in use.",
     unknown: "Not recognised.",
     unsupported: "Not supported.",

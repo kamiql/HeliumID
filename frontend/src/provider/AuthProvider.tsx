@@ -1,10 +1,12 @@
 import { useEffect, useRef, type ReactNode } from "react"
-import { Alert, Box, CircularProgress, Snackbar } from "@mui/material"
+import { Alert, Box, CircularProgress, Snackbar, Stack, Typography, useMediaQuery } from "@mui/material"
+import type { Theme } from "@mui/material/styles"
 import { useAuthStore } from "../stores/auth.store.ts"
 import { useNoticeStore } from "../stores/notice.store.ts"
 import { useReauthStore } from "../stores/reauth.store.ts"
 import { registerApiHandlers } from "../api/axios.ts"
 import ReauthDialog from "../components/ReauthDialog.tsx"
+import Brand from "../components/global/Brand.tsx"
 
 /**
  * The interceptor cannot import the stores (that would be circular), so the global reactions
@@ -38,6 +40,7 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
     const notices = useNoticeStore((state) => state.notices)
     const dismiss = useNoticeStore((state) => state.dismiss)
     const started = useRef(false)
+    const compact = useMediaQuery((theme: Theme) => theme.breakpoints.down("sm"))
 
     useEffect(() => {
         if (started.current) return
@@ -53,34 +56,73 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
                 children
             ) : (
                 <Box
+                    role="status"
+                    aria-live="polite"
                     sx={{
                         minHeight: "100vh",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
+                        p: 3,
                     }}
                 >
-                    <CircularProgress color="primary" />
+                    {/* Not a link: this renders outside the router, so Brand must stay inert. */}
+                    <Stack spacing={2.5} sx={{ alignItems: "center", textAlign: "center" }}>
+                        <Brand />
+
+                        <CircularProgress color="primary" size={26} />
+
+                        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                            Restoring your session…
+                        </Typography>
+                    </Stack>
                 </Box>
             )}
 
             <ReauthDialog />
 
-            <Snackbar
-                open={current !== undefined}
-                autoHideDuration={6000}
-                onClose={() => current && dismiss(current.id)}
-                anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-            >
-                <Alert
-                    severity={current?.severity ?? "info"}
-                    variant="filled"
-                    onClose={() => current && dismiss(current.id)}
-                    sx={{ borderRadius: 2 }}
+            {/*
+              * Mounted only while a notice is queued, and keyed on its id, so the next message
+              * replaces the current one immediately. Without the key MUI keeps the open
+              * snackbar on screen and the queue looks stuck behind whatever is showing.
+              */}
+            {current && (
+                <Snackbar
+                    key={current.id}
+                    open
+                    autoHideDuration={6000}
+                    onClose={(_event, reason) => {
+                        // A click anywhere should not wipe a message the user has not read yet.
+                        if (reason === "clickaway") return
+                        dismiss(current.id)
+                    }}
+                    anchorOrigin={{
+                        vertical: "bottom",
+                        horizontal: compact ? "center" : "right",
+                    }}
+                    // Below sm the snackbar already spans the viewport, so only the desktop
+                    // side needs a cap — long messages then wrap instead of stretching across
+                    // the page.
+                    sx={{ maxWidth: { sm: 440 } }}
                 >
-                    {current?.message}
-                </Alert>
-            </Snackbar>
+                    <Alert
+                        severity={current.severity}
+                        variant="filled"
+                        // Failures interrupt; confirmations do not.
+                        role={current.severity === "error" ? "alert" : "status"}
+                        onClose={() => dismiss(current.id)}
+                        sx={{
+                            borderRadius: 2,
+                            width: "100%",
+                            alignItems: "center",
+                            // Long sentences wrap instead of being clipped on a narrow screen.
+                            "& .MuiAlert-message": { overflowWrap: "anywhere" },
+                        }}
+                    >
+                        {current.message}
+                    </Alert>
+                </Snackbar>
+            )}
         </>
     )
 }

@@ -4,11 +4,17 @@ import dev.kamiql.helium.domain.common.MfaFactorId
 import dev.kamiql.helium.domain.common.Secret
 import dev.kamiql.helium.domain.common.SessionId
 import dev.kamiql.helium.domain.common.TransactionId
+import dev.kamiql.helium.domain.common.TrustedDeviceId
 import dev.kamiql.helium.domain.common.UserId
 import dev.kamiql.helium.domain.identity.ProviderKey
+import dev.kamiql.helium.domain.mfa.MfaResponse
 import dev.kamiql.helium.domain.mfa.MfaType
+import dev.kamiql.helium.domain.mfa.WebAuthnAuthenticationOptions
+import dev.kamiql.helium.domain.mfa.WebAuthnRegistrationOptions
 import dev.kamiql.helium.domain.session.IssuedSession
+import dev.kamiql.helium.domain.session.IssuedTrustedDevice
 import dev.kamiql.helium.domain.user.UserStatus
+import java.time.Instant
 
 /**
  * Commands and results for the identity flows.
@@ -43,6 +49,14 @@ data class LoginCommand(
     /** Username or email; resolved through a single normalized lookup. */
     val identifier: String,
     val password: Secret,
+    /**
+     * Value of the trusted-device cookie, if the browser sent one.
+     *
+     * Read from the request by the route and passed in as opaque input — the flow decides what
+     * it means. An absent, unknown or stale value is not an error and produces the ordinary MFA
+     * challenge.
+     */
+    val trustedDeviceToken: Secret? = null,
 )
 
 /**
@@ -55,17 +69,76 @@ data class LoginSucceeded(
     val session: IssuedSession,
     val userId: UserId,
     val newDevice: Boolean,
+    /** What the HTTP layer should do with the trusted-device cookie. */
+    val trustedDevice: TrustedDeviceDirective = TrustedDeviceDirective.Keep,
+)
+
+/**
+ * Instruction to the HTTP boundary about the trusted-device cookie.
+ *
+ * A sealed type rather than a nullable token because "issue this value", "delete what you have"
+ * and "leave it alone" are three different outcomes, and a `null` would collapse the last two
+ * into one — leaving a revoked device's cookie sitting in the browser.
+ */
+sealed interface TrustedDeviceDirective {
+
+    /** Set the cookie to [device]'s plaintext, valid until [expiresAt]. */
+    data class Issue(val device: IssuedTrustedDevice, val expiresAt: Instant) : TrustedDeviceDirective
+
+    /** Delete the cookie: the device it referred to is gone. */
+    data object Clear : TrustedDeviceDirective
+
+    /** Touch nothing. */
+    data object Keep : TrustedDeviceDirective
+}
+
+/**
+ * Asks for the server-chosen nonce a method needs before it can be answered.
+ *
+ * Only meaningful for challenge-signing methods; for TOTP and recovery codes there is nothing
+ * to hand out and the result carries no options. Reads the MFA transaction without consuming
+ * it — spending it here would mean fetching a challenge burned the user's one attempt.
+ */
+data class BeginMfaChallengeCommand(
+    val transactionId: TransactionId,
+    val method: MfaType,
+)
+
+/** @param webauthnOptions `null` for methods that do not sign a challenge. */
+data class MfaChallengeStarted(
+    val method: MfaType,
+    val webauthnOptions: WebAuthnAuthenticationOptions?,
 )
 
 data class CompleteMfaCommand(
     val transactionId: TransactionId,
     val method: MfaType,
-    val code: Secret,
+    /**
+     * What the user presented.
+     *
+     * Typed as the sealed [MfaResponse] rather than a bare code so a passkey assertion travels
+     * the same path as a TOTP code instead of needing a parallel flow.
+     */
+    val response: MfaResponse,
+    /**
+     * User asked to skip the challenge on this device next time.
+     *
+     * Defaults to `false`: remembering a device lowers assurance, so it happens only on an
+     * explicit request, never as a side effect of signing in.
+     */
+    val rememberDevice: Boolean = false,
 )
 
 data class LogoutCommand(val sessionId: SessionId)
 
 data class RevokeSessionCommand(val sessionId: SessionId)
+
+data class RevokeTrustedDeviceCommand(val deviceId: TrustedDeviceId)
+
+data object RevokeAllTrustedDevicesCommand
+
+/** @param revoked how many devices were still live when the sweep ran. */
+data class TrustedDevicesRevoked(val revoked: Int)
 
 data class RequestPasswordResetCommand(val email: String)
 
@@ -121,6 +194,41 @@ data class ConfirmTotpEnrollmentCommand(
 data class TotpEnrollmentConfirmed(val recoveryCodes: List<String>)
 
 data class DisableTotpCommand(
+    val factorId: MfaFactorId,
+    val currentPassword: Secret?,
+)
+
+/** @param label what the user calls this authenticator ("Yubikey", "iPhone"). */
+data class BeginWebAuthnEnrollmentCommand(val label: String?)
+
+/**
+ * Creation options for `navigator.credentials.create()`.
+ *
+ * No secret leaves the server here, unlike TOTP: the key pair is generated on the
+ * authenticator and only the public half ever comes back.
+ */
+data class WebAuthnEnrollmentStarted(
+    val factorId: MfaFactorId,
+    val options: WebAuthnRegistrationOptions,
+)
+
+data class ConfirmWebAuthnEnrollmentCommand(
+    val factorId: MfaFactorId,
+    val label: String?,
+    val response: MfaResponse.WebAuthnRegistration,
+)
+
+/**
+ * @param recoveryCodes issued only when this factor is the user's first, and `null` otherwise.
+ *        Regenerating unconditionally would silently invalidate the codes a user with an
+ *        existing factor already wrote down.
+ */
+data class WebAuthnEnrollmentConfirmed(
+    val factorId: MfaFactorId,
+    val recoveryCodes: List<String>?,
+)
+
+data class RemoveWebAuthnCredentialCommand(
     val factorId: MfaFactorId,
     val currentPassword: Secret?,
 )

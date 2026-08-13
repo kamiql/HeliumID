@@ -29,6 +29,7 @@ include("provider-spi")
 include("security-crypto")
 include("provider-oidc")
 include("mfa-totp")
+include("mfa-webauthn")
 include("persistence-postgres")
 include("persistence-redis")
 

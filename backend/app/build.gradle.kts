@@ -14,7 +14,10 @@ dependencies {
     implementation(project(":persistence-redis"))
     implementation(project(":provider-oidc"))
     implementation(project(":mfa-totp"))
+    implementation(project(":mfa-webauthn"))
     implementation(project(":security-crypto"))
+    // For ScrubbedAuditPort, which wraps the audit repository in the flow runner.
+    implementation(project(":audit-risk"))
     implementation(project(":jobs"))
 
     implementation(ktorLibs.server.core)

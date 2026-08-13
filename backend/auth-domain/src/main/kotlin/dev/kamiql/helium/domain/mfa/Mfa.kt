@@ -131,9 +131,49 @@ enum class MfaPolicy {
     REQUIRED_FOR_PRIVILEGED,
 }
 
-/** A code the user typed, wrapped so it cannot be logged. */
-@JvmInline
-value class MfaResponse(val code: Secret)
+/**
+ * What the user presented to satisfy a second factor.
+ *
+ * Sealed rather than a bare string because the two families are genuinely different shapes: a
+ * TOTP or recovery code is a short value the user typed, while a WebAuthn response is a
+ * structured set of authenticator outputs that only means something as a whole. Serializing
+ * the latter into the former would put a parser in every implementation and make "which
+ * fields are present" a runtime question instead of a compile-time one.
+ */
+sealed interface MfaResponse {
+
+    /** A value the user typed. Wrapped in [Secret] so it cannot be logged. */
+    @JvmInline
+    value class Code(val value: Secret) : MfaResponse
+
+    /**
+     * Output of `navigator.credentials.create()`, presented to finish enrollment.
+     *
+     * Every binary field is base64url as it arrived from the client. The bytes are decoded and
+     * validated by the WebAuthn adapter, never here — the domain must not grow a CBOR parser.
+     */
+    data class WebAuthnRegistration(
+        val credentialId: String,
+        val clientDataJson: String,
+        val attestationObject: String,
+        /** Authenticator-reported transports (`usb`, `nfc`, `internal`, …). Advisory only. */
+        val transports: List<String>,
+    ) : MfaResponse
+
+    /**
+     * Output of `navigator.credentials.get()`, presented to answer a login challenge.
+     *
+     * [userHandle] is absent for a non-discoverable credential, which is the normal case for a
+     * second factor: the user is already identified by the MFA transaction.
+     */
+    data class WebAuthnAssertion(
+        val credentialId: String,
+        val clientDataJson: String,
+        val authenticatorData: String,
+        val signature: String,
+        val userHandle: String?,
+    ) : MfaResponse
+}
 
 /** Outcome of verifying a second factor. */
 sealed interface MfaVerificationResult {

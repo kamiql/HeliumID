@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client"
 import { createBrowserRouter, RouterProvider } from "react-router"
 
 import Layout from "./components/global/Layout.tsx"
+import AuthLayout from "./components/global/AuthLayout.tsx"
 import AuthProvider from "./provider/AuthProvider.tsx"
 import { ConfirmProvider } from "./provider/ConfirmProvider.tsx"
 import { ThemeProvider } from "./provider/ThemeProvider.tsx"
@@ -46,33 +47,44 @@ const router = createBrowserRouter([
         element: <Layout />,
         children: [
             {
-                // Signed-out flows. Email verification and password reset stay reachable to
-                // guests only — a signed-in user has the equivalent controls under /account.
-                element: <RequireGuest />,
+                // Pathless: every page a signed-out visitor can land on shares one centred
+                // card shell. It changes no URL, it only stops these pages from inheriting
+                // the dashboard chrome.
+                element: <AuthLayout />,
                 children: [
-                    { path: "login", element: <LoginPage /> },
-                    { path: "register", element: <RegisterPage /> },
-                    { path: "forgot-password", element: <ForgotPasswordPage /> },
-                    { path: "reset-password", element: <ResetPasswordPage /> },
+                    {
+                        // Signed-out flows. Email verification and password reset stay
+                        // reachable to guests only — a signed-in user has the equivalent
+                        // controls under /account.
+                        element: <RequireGuest />,
+                        children: [
+                            { path: "login", element: <LoginPage /> },
+                            { path: "register", element: <RegisterPage /> },
+                            { path: "forgot-password", element: <ForgotPasswordPage /> },
+                            { path: "reset-password", element: <ResetPasswordPage /> },
+                        ],
+                    },
+                    {
+                        // Not guest-only: an account pending verification can already sign in,
+                        // so the link from the verification email must work while a session
+                        // exists.
+                        path: "verify-email",
+                        element: <VerifyEmailPage />,
+                    },
+                    {
+                        // The link is mailed to the address being claimed and may be opened in
+                        // a different browser, so it must not require the session that started
+                        // it.
+                        path: "account/email-change/confirm",
+                        element: <ConfirmEmailChangePage />,
+                    },
+                    {
+                        // Caddy serves the SPA for this path; the page replays the query
+                        // against the API and renders the consent prompt the backend returns.
+                        path: "oauth2/authorize",
+                        element: <ConsentPage />,
+                    },
                 ],
-            },
-            {
-                // Not guest-only: an account pending verification can already sign in, so the
-                // link from the verification email must work while a session exists.
-                path: "verify-email",
-                element: <VerifyEmailPage />,
-            },
-            {
-                // The link is mailed to the address being claimed and may be opened in a
-                // different browser, so it must not require the session that started it.
-                path: "account/email-change/confirm",
-                element: <ConfirmEmailChangePage />,
-            },
-            {
-                // Caddy serves the SPA for this path; the page replays the query against the
-                // API and renders the consent prompt the backend returns.
-                path: "oauth2/authorize",
-                element: <ConsentPage />,
             },
             {
                 element: <RequireAuth />,

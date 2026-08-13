@@ -17,6 +17,14 @@ data class Lifetimes(
     val refreshTokenInactivity: Duration = Duration.ofDays(30),
     val refreshTokenAbsolute: Duration = Duration.ofDays(90),
     val mfaTransaction: Duration = Duration.ofMinutes(5),
+    /**
+     * How long a device stays exempt from the MFA challenge after the user proved a second
+     * factor on it. Absolute and never sliding: a window that renews on every login is a second
+     * factor that has been switched off rather than deferred.
+     *
+     * [Duration.ZERO] disables trusted devices entirely.
+     */
+    val trustedDevice: Duration = Duration.ofDays(30),
     val emailVerificationToken: Duration = Duration.ofHours(24),
     val passwordResetToken: Duration = Duration.ofMinutes(15),
     val oauthState: Duration = Duration.ofMinutes(10),
@@ -39,6 +47,14 @@ data class Lifetimes(
         }
         require(accessToken <= Duration.ofMinutes(15)) {
             "access tokens are only revocable by expiry; keep them short"
+        }
+        require(!trustedDevice.isNegative) {
+            "trusted device lifetime cannot be negative; use ZERO to disable the feature"
+        }
+        require(trustedDevice <= Duration.ofDays(365)) {
+            // Beyond a year the exemption outlives the laptop, the job and usually the memory
+            // that it was ever granted.
+            "trusted device lifetime must not exceed a year"
         }
     }
 

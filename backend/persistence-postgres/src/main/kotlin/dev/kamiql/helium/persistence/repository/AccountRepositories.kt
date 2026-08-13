@@ -3,6 +3,7 @@ package dev.kamiql.helium.persistence.repository
 import dev.kamiql.helium.domain.common.EmailAddress
 import dev.kamiql.helium.domain.common.ExternalIdentityId
 import dev.kamiql.helium.domain.common.SessionId
+import dev.kamiql.helium.domain.common.TrustedDeviceId
 import dev.kamiql.helium.domain.common.UserId
 import dev.kamiql.helium.domain.credential.PasswordCredential
 import dev.kamiql.helium.domain.credential.PasswordHash
@@ -19,14 +20,18 @@ import dev.kamiql.helium.domain.repository.ExternalIdentityRepository
 import dev.kamiql.helium.domain.repository.PasswordCredentialRepository
 import dev.kamiql.helium.domain.repository.RoleRepository
 import dev.kamiql.helium.domain.repository.SessionRepository
+import dev.kamiql.helium.domain.repository.TrustedDeviceRepository
 import dev.kamiql.helium.domain.session.AuthenticationMethod
 import dev.kamiql.helium.domain.session.Session
 import dev.kamiql.helium.domain.session.SessionRevocationReason
+import dev.kamiql.helium.domain.session.TrustedDevice
+import dev.kamiql.helium.domain.session.TrustedDeviceRevocationReason
 import dev.kamiql.helium.persistence.ExternalIdentitiesTable
 import dev.kamiql.helium.persistence.PasswordCredentialsTable
 import dev.kamiql.helium.persistence.RolePermissionsTable
 import dev.kamiql.helium.persistence.RolesTable
 import dev.kamiql.helium.persistence.SessionsTable
+import dev.kamiql.helium.persistence.TrustedDevicesTable
 import dev.kamiql.helium.persistence.UserRolesTable
 import dev.kamiql.helium.persistence.dbQuery
 import dev.kamiql.helium.persistence.toDb
@@ -398,5 +403,184 @@ class SessionRepositoryImpl(private val database: Database) : SessionRepository 
         ipHash = this[SessionsTable.ipHash],
         userAgentHash = this[SessionsTable.userAgentHash],
         deviceLabel = this[SessionsTable.deviceLabel],
+    )
+}
+
+class TrustedDeviceRepositoryImpl(private val database: Database) : TrustedDeviceRepository {
+
+    /**
+     * Every lookup carries `user_id` in the predicate even though `token_hash` is unique.
+     *
+     * The uniqueness makes the extra term redundant *today*; it is there so that a token cannot
+     * be substituted across accounts even if the index is ever relaxed, and so that the binding
+     * is visible in the query rather than only in a schema file.
+     */
+    override suspend fun findByHash(userId: UserId, tokenHash: String): TrustedDevice? =
+        dbQuery(database) {
+            TrustedDevicesTable.selectAll()
+                .where {
+                    (TrustedDevicesTable.userId eq userId.value) and
+                        (TrustedDevicesTable.tokenHash eq tokenHash)
+                }
+                .firstOrNull()?.toTrustedDevice()
+        }
+
+    override suspend fun findByPreviousHash(userId: UserId, tokenHash: String): TrustedDevice? =
+        dbQuery(database) {
+            TrustedDevicesTable.selectAll()
+                .where {
+                    (TrustedDevicesTable.userId eq userId.value) and
+                        (TrustedDevicesTable.previousTokenHash eq tokenHash)
+                }
+                .firstOrNull()?.toTrustedDevice()
+        }
+
+    override suspend fun claimReuse(
+        userId: UserId,
+        deviceId: TrustedDeviceId,
+        previousTokenHash: String,
+        at: Instant,
+    ): Boolean = dbQuery(database) {
+        // Clearing the hash *is* the claim, and it comes first: the predicate can never match
+        // that value again, so a second replay — racing, or by the same attacker a week later —
+        // updates zero rows and loses. Both statements share this transaction, so a claim is
+        // never left standing without its revocation.
+        val claimed = TrustedDevicesTable.update(
+            where = {
+                (TrustedDevicesTable.id eq deviceId.value) and
+                    (TrustedDevicesTable.userId eq userId.value) and
+                    (TrustedDevicesTable.previousTokenHash eq previousTokenHash)
+            },
+        ) { row -> row[TrustedDevicesTable.previousTokenHash] = null } > 0
+
+        if (claimed) {
+            // Only if still live. A device revoked earlier for an unrelated reason keeps that
+            // reason and timestamp — the reuse is a second fact about it, not a correction.
+            TrustedDevicesTable.update(
+                where = {
+                    (TrustedDevicesTable.id eq deviceId.value) and TrustedDevicesTable.revokedAt.isNull()
+                },
+            ) { row ->
+                row[revokedAt] = at.toDb()
+                row[revokedReason] = TrustedDeviceRevocationReason.REUSE_DETECTED.name
+            }
+        }
+        claimed
+    }
+
+    override suspend fun listActiveForUser(userId: UserId, now: Instant): List<TrustedDevice> =
+        dbQuery(database) {
+            TrustedDevicesTable.selectAll()
+                .where {
+                    (TrustedDevicesTable.userId eq userId.value) and
+                        TrustedDevicesTable.revokedAt.isNull() and
+                        (TrustedDevicesTable.expiresAt greater now.toDb())
+                }
+                .orderBy(TrustedDevicesTable.lastUsedAt, SortOrder.DESC)
+                .map { it.toTrustedDevice() }
+        }
+
+    override suspend fun insert(device: TrustedDevice): TrustedDevice = dbQuery(database) {
+        TrustedDevicesTable.insert { row ->
+            row[id] = device.id.value
+            row[userId] = device.userId.value
+            row[tokenHash] = device.tokenHash
+            row[previousTokenHash] = device.previousTokenHash
+            row[label] = device.label
+            row[createdAt] = device.createdAt.toDb()
+            row[lastUsedAt] = device.lastUsedAt.toDb()
+            row[expiresAt] = device.expiresAt.toDb()
+            row[revokedAt] = device.revokedAt?.toDb()
+            row[revokedReason] = device.revokedReason?.name
+        }
+        device
+    }
+
+    /**
+     * One conditional UPDATE, keyed on the hash the caller believes is current.
+     *
+     * That predicate is the concurrency control: two logins racing with the same cookie both
+     * compute a successor, but only the first UPDATE matches a row. The second sees zero rows
+     * affected and must fall back to a challenge — the alternative, a read-then-write, would
+     * leave two live tokens for one device and quietly break reuse detection.
+     *
+     * `expires_at` is deliberately untouched: rotation renews the credential, not the trust.
+     */
+    override suspend fun rotate(
+        id: TrustedDeviceId,
+        expectedHash: String,
+        newHash: String,
+        at: Instant,
+    ): Boolean = dbQuery(database) {
+        TrustedDevicesTable.update(
+            where = {
+                (TrustedDevicesTable.id eq id.value) and
+                    (TrustedDevicesTable.tokenHash eq expectedHash) and
+                    TrustedDevicesTable.revokedAt.isNull()
+            },
+        ) { row ->
+            row[tokenHash] = newHash
+            row[previousTokenHash] = expectedHash
+            row[lastUsedAt] = at.toDb()
+        } > 0
+    }
+
+    override suspend fun revoke(
+        userId: UserId,
+        id: TrustedDeviceId,
+        at: Instant,
+        reason: TrustedDeviceRevocationReason,
+    ): Boolean = dbQuery(database) {
+        // Scoped to the owner so one account cannot revoke another's device by guessing an id,
+        // and only live rows, so a second revoke does not overwrite the original reason.
+        TrustedDevicesTable.update(
+            where = {
+                (TrustedDevicesTable.id eq id.value) and
+                    (TrustedDevicesTable.userId eq userId.value) and
+                    TrustedDevicesTable.revokedAt.isNull()
+            },
+        ) { row ->
+            row[revokedAt] = at.toDb()
+            row[revokedReason] = reason.name
+            if (reason == TrustedDeviceRevocationReason.REUSE_DETECTED) {
+                row[previousTokenHash] = null
+            }
+        } > 0
+    }
+
+    override suspend fun revokeAllForUser(
+        userId: UserId,
+        at: Instant,
+        reason: TrustedDeviceRevocationReason,
+    ): Int = dbQuery(database) {
+        TrustedDevicesTable.update(
+            where = {
+                (TrustedDevicesTable.userId eq userId.value) and TrustedDevicesTable.revokedAt.isNull()
+            },
+        ) { row ->
+            row[revokedAt] = at.toDb()
+            row[revokedReason] = reason.name
+            if (reason == TrustedDeviceRevocationReason.REUSE_DETECTED) {
+                row[previousTokenHash] = null
+            }
+        }
+    }
+
+    override suspend fun deleteExpired(before: Instant): Int = dbQuery(database) {
+        TrustedDevicesTable.deleteWhere { expiresAt less before.toDb() }
+    }
+
+    private fun ResultRow.toTrustedDevice() = TrustedDevice(
+        id = TrustedDeviceId(this[TrustedDevicesTable.id]),
+        userId = UserId(this[TrustedDevicesTable.userId]),
+        tokenHash = this[TrustedDevicesTable.tokenHash],
+        previousTokenHash = this[TrustedDevicesTable.previousTokenHash],
+        label = this[TrustedDevicesTable.label],
+        createdAt = this[TrustedDevicesTable.createdAt].toInstantUtc(),
+        lastUsedAt = this[TrustedDevicesTable.lastUsedAt].toInstantUtc(),
+        expiresAt = this[TrustedDevicesTable.expiresAt].toInstantUtc(),
+        revokedAt = this[TrustedDevicesTable.revokedAt]?.toInstantUtc(),
+        revokedReason = this[TrustedDevicesTable.revokedReason]
+            ?.let { name -> runCatching { TrustedDeviceRevocationReason.valueOf(name) }.getOrNull() },
     )
 }

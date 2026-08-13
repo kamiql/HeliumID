@@ -351,6 +351,27 @@ public data class ScopeResponse(
     public val description: String,
     /** Implicit scopes are granted without an explicit consent tick. */
     public val implicit: Boolean,
+    /**
+     * Part of the protocol rather than of this deployment's policy.
+     *
+     * `openid`, `profile`, `email` and `offline_access`. The server refuses to edit or delete
+     * these, so a scope editor should render them read-only rather than let a user try.
+     */
+    @SerialName("built_in") public val builtIn: Boolean = false,
+)
+
+/**
+ * Body of `PUT /v1/admin/scopes/{name}`. The name travels in the path, not here.
+ *
+ * @property description shown verbatim on the consent screen, so write it as a sentence a
+ *           non-technical user can act on — "See your documents", not "workspace:read".
+ * @property implicit granted without appearing on the consent screen. Appropriate only for a
+ *           scope that carries no authority a user would want to decline.
+ */
+@Serializable
+public data class UpsertScopeRequest(
+    public val description: String,
+    public val implicit: Boolean = false,
 )
 
 // --- OAuth protocol ------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import { Button, IconButton, Tooltip, type ButtonProps } from "@mui/material"
 import { Check, ContentCopy } from "@mui/icons-material"
 import { useState } from "react"
+import { notify } from "../stores/notice.store.ts"
 
 type CopyButtonProps = {
     value: string
@@ -36,20 +37,25 @@ export default function CopyButton({
                 area.style.opacity = "0"
                 document.body.appendChild(area)
                 area.select()
-                document.execCommand("copy")
+                const succeeded = document.execCommand("copy")
                 document.body.removeChild(area)
+                // `execCommand` reports failure by returning false rather than by throwing.
+                if (!succeeded) throw new Error("execCommand copy rejected")
             }
             setCopied(true)
             window.setTimeout(() => setCopied(false), 1500)
         } catch {
             setCopied(false)
+            // Silence here is the worst outcome: the user walks away from a one-time secret
+            // believing they have it. Say so loudly enough that they copy it by hand.
+            notify("Could not copy to the clipboard. Select the value and copy it manually.", "error")
         }
     }
 
     if (iconOnly) {
         return (
             <Tooltip title={copied ? "Copied" : label}>
-                <IconButton size={size} onClick={() => void copy()}>
+                <IconButton size={size} aria-label={label} onClick={() => void copy()}>
                     {copied ? <Check fontSize="small" /> : <ContentCopy fontSize="small" />}
                 </IconButton>
             </Tooltip>

@@ -5,9 +5,34 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="HeliumID — sign in and manage your identity across connected applications." />
+    <meta name="color-scheme" content="light dark" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+    <!--
+      Inter carries the interface; Silkscreen is loaded only for the HeliumID wordmark, and
+      JetBrains Mono only for identifiers and one-time secrets.
+    -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+    <script>
+      // Paint the correct background before React mounts, so a dark-mode reload does not
+      // flash white. Mirrors the resolution order in ThemeProvider.
+      (function () {
+        try {
+          var stored = localStorage.getItem("theme");
+          var mode =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.style.colorScheme = mode;
+          document.documentElement.style.backgroundColor = mode === "dark" ? "#0B0F1A" : "#F6F8FB";
+        } catch (error) {
+          /* storage unavailable — the theme provider still resolves a mode at mount */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

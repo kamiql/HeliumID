@@ -11,13 +11,16 @@ import dev.kamiql.helium.domain.mfa.MfaType
 import dev.kamiql.helium.domain.mfa.RecoveryCode
 import dev.kamiql.helium.domain.mfa.TotpAlgorithm
 import dev.kamiql.helium.domain.mfa.TotpFactor
+import dev.kamiql.helium.domain.mfa.WebAuthnCredential
 import dev.kamiql.helium.domain.repository.MfaRepository
 import dev.kamiql.helium.domain.repository.StoredVerificationToken
 import dev.kamiql.helium.domain.repository.VerificationTokenRepository
+import dev.kamiql.helium.domain.repository.WebAuthnCredentialRepository
 import dev.kamiql.helium.persistence.MfaFactorsTable
 import dev.kamiql.helium.persistence.RecoveryCodesTable
 import dev.kamiql.helium.persistence.TotpFactorsTable
 import dev.kamiql.helium.persistence.VerificationTokensTable
+import dev.kamiql.helium.persistence.WebAuthnCredentialsTable
 import dev.kamiql.helium.persistence.dbQuery
 import dev.kamiql.helium.persistence.toDb
 import dev.kamiql.helium.persistence.toInstantUtc
@@ -75,6 +78,14 @@ class MfaRepositoryImpl(private val database: Database) : MfaRepository {
             ) { row ->
                 row[status] = MfaFactorStatus.ACTIVE.name
                 row[lastUsedAt] = at.toDb()
+            }
+        }
+    }
+
+    override suspend fun relabelFactor(id: MfaFactorId, label: String) {
+        dbQuery(database) {
+            MfaFactorsTable.update(where = { MfaFactorsTable.id eq id.value }) { row ->
+                row[MfaFactorsTable.label] = label
             }
         }
     }
@@ -200,6 +211,112 @@ class MfaRepositoryImpl(private val database: Database) : MfaRepository {
         status = MfaFactorStatus.valueOf(this[MfaFactorsTable.status]),
         createdAt = this[MfaFactorsTable.createdAt].toInstantUtc(),
         lastUsedAt = this[MfaFactorsTable.lastUsedAt]?.toInstantUtc(),
+    )
+}
+
+/**
+ * Passkeys, stored one row per owning `MfaFactor`.
+ *
+ * The credential's `id` column *is* the factor id (V4 adds the foreign key that enforces it), so
+ * there is no separate `factor_id` to map: revoking the factor cascades the credential away, and
+ * label, status and revocation stay in [MfaFactorsTable] where the generic factor endpoints
+ * already manage them.
+ */
+class WebAuthnCredentialRepositoryImpl(private val database: Database) : WebAuthnCredentialRepository {
+
+    override suspend fun listForUser(userId: UserId): List<WebAuthnCredential> = dbQuery(database) {
+        WebAuthnCredentialsTable.selectAll()
+            .where { WebAuthnCredentialsTable.userId eq userId.value }
+            .map { it.toCredential() }
+    }
+
+    override suspend fun findByFactor(factorId: MfaFactorId): WebAuthnCredential? = dbQuery(database) {
+        WebAuthnCredentialsTable.selectAll()
+            .where { WebAuthnCredentialsTable.id eq factorId.value }
+            .firstOrNull()?.toCredential()
+    }
+
+    /**
+     * Scoped to the user as well as the credential id.
+     *
+     * The id arrives from the client inside an assertion. Resolving it globally would let a
+     * credential registered on one account be presented against another, so the owner is part of
+     * the predicate rather than something the caller is trusted to check afterwards.
+     */
+    override suspend fun findByCredentialId(userId: UserId, credentialId: ByteArray): WebAuthnCredential? =
+        dbQuery(database) {
+            WebAuthnCredentialsTable.selectAll()
+                .where {
+                    (WebAuthnCredentialsTable.userId eq userId.value) and
+                        (WebAuthnCredentialsTable.credentialId eq credentialId)
+                }
+                .firstOrNull()?.toCredential()
+        }
+
+    override suspend fun insert(credential: WebAuthnCredential) {
+        dbQuery(database) {
+            WebAuthnCredentialsTable.insert { row ->
+                row[id] = credential.factorId.value
+                row[userId] = credential.userId.value
+                row[credentialId] = credential.credentialId
+                row[publicKey] = credential.publicKey
+                row[signatureCounter] = credential.signatureCounter
+                row[aaguid] = credential.aaguid
+                row[transports] = credential.transports
+                row[userVerifiedRequired] = credential.userVerifiedRequired
+                row[backupEligible] = credential.backupEligible
+                row[backupState] = credential.backupState
+                row[rpId] = credential.rpId
+                row[createdAt] = credential.createdAt.toDb()
+                row[lastUsedAt] = credential.lastUsedAt?.toDb()
+            }
+        }
+    }
+
+    /**
+     * Single conditional UPDATE, for the same reason [MfaRepositoryImpl.tryAdvanceTotpStep] is
+     * one: a read-then-write would let two concurrent assertions replaying the same counter both
+     * observe the old value and both succeed, which is exactly the cloned-authenticator case the
+     * counter exists to catch.
+     */
+    override suspend fun tryAdvanceSignatureCounter(
+        factorId: MfaFactorId,
+        counter: Long,
+        at: Instant,
+    ): Boolean = dbQuery(database) {
+        WebAuthnCredentialsTable.update(
+            where = {
+                (WebAuthnCredentialsTable.id eq factorId.value) and
+                    (WebAuthnCredentialsTable.signatureCounter less counter)
+            },
+        ) { row ->
+            row[signatureCounter] = counter
+            row[lastUsedAt] = at.toDb()
+        } > 0
+    }
+
+    override suspend fun touch(factorId: MfaFactorId, at: Instant) {
+        dbQuery(database) {
+            WebAuthnCredentialsTable.update(where = { WebAuthnCredentialsTable.id eq factorId.value }) { row ->
+                row[lastUsedAt] = at.toDb()
+            }
+        }
+    }
+
+    private fun ResultRow.toCredential() = WebAuthnCredential(
+        factorId = MfaFactorId(this[WebAuthnCredentialsTable.id]),
+        userId = UserId(this[WebAuthnCredentialsTable.userId]),
+        credentialId = this[WebAuthnCredentialsTable.credentialId],
+        publicKey = this[WebAuthnCredentialsTable.publicKey],
+        signatureCounter = this[WebAuthnCredentialsTable.signatureCounter],
+        aaguid = this[WebAuthnCredentialsTable.aaguid],
+        transports = this[WebAuthnCredentialsTable.transports],
+        userVerifiedRequired = this[WebAuthnCredentialsTable.userVerifiedRequired],
+        backupEligible = this[WebAuthnCredentialsTable.backupEligible],
+        backupState = this[WebAuthnCredentialsTable.backupState],
+        rpId = this[WebAuthnCredentialsTable.rpId],
+        createdAt = this[WebAuthnCredentialsTable.createdAt].toInstantUtc(),
+        lastUsedAt = this[WebAuthnCredentialsTable.lastUsedAt]?.toInstantUtc(),
     )
 }
 

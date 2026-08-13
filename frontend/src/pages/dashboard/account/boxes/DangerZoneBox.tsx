@@ -1,6 +1,5 @@
 import {
     Alert,
-    Box,
     Dialog,
     DialogActions,
     DialogContent,
@@ -32,6 +31,8 @@ export default function DangerZoneBox() {
             setLoading(true)
             setError(null)
 
+            // `null` rather than an empty string: an account created through a provider has no
+            // password to confirm with, and the server decides what proof it needs.
             await accountApi.deleteAccount({ current_password: password || null })
 
             clearSession()
@@ -47,28 +48,14 @@ export default function DangerZoneBox() {
     return (
         <>
             <AccountBox
-                title="Danger zone"
+                title="Delete account"
                 description="Permanently delete your account and all associated data."
-                sx={{
-                    flex: "1 1 100%",
-                    border: "1px solid",
-                    borderColor: "error.main",
-                }}
-            >
-                <Box
-                    sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 2,
-                        flexWrap: "wrap",
-                    }}
-                >
-                    <Typography variant="body2">This action cannot be undone.</Typography>
-
+                tone="danger"
+                actions={
                     <AccountButton
                         variant="contained"
                         color="error"
+                        aria-label="Delete account"
                         onClick={() => {
                             setPassword("")
                             setError(null)
@@ -77,7 +64,12 @@ export default function DangerZoneBox() {
                     >
                         Delete account
                     </AccountButton>
-                </Box>
+                }
+            >
+                <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    This action cannot be undone. Your profile, sessions and linked providers are
+                    removed, and any application signed in through HeliumID loses access.
+                </Typography>
             </AccountBox>
 
             <Dialog
@@ -95,10 +87,6 @@ export default function DangerZoneBox() {
                             and audit records are retained as required.
                         </Alert>
 
-                        <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                            Confirm with your password to continue.
-                        </Typography>
-
                         <PasswordField
                             fullWidth
                             autoFocus
@@ -109,6 +97,10 @@ export default function DangerZoneBox() {
                                 setPassword(value)
                                 setError(null)
                             }}
+                            // Deliberately optional: an account that only ever signed in through a
+                            // provider has no password, and the server is the one that decides
+                            // whether the proof it was given is enough.
+                            helperText="Leave empty if you only ever sign in with a linked provider and have never set a password."
                         />
 
                         {error !== null && <ErrorAlert error={error} />}

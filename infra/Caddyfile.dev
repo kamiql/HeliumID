@@ -60,6 +60,26 @@
 		}
 	}
 
+	# The consent screen is a page, and only a browser asking for a page should get it.
+	#
+	# `GET /oauth2/authorize` answers three different ways (see OAuthRoutes.kt): a 302 to the
+	# client's redirect_uri, a 302 to /login, or 200 with a ConsentPromptResponse when the user
+	# has not yet approved the client. That last one is JSON, and a browser navigating here would
+	# render it raw — the SPA's ConsentPage would never run, because this path goes to the backend.
+	#
+	# So the routing follows the Accept header: a navigation (text/html) reaches the SPA, which
+	# replays the same query with Accept: application/json and renders the prompt it gets back.
+	# Everything else — the SPA's own XHR, curl, a conforming OAuth client — keeps reaching the
+	# backend unchanged. Only /oauth2/authorize is split this way; token, revoke and introspect
+	# must never be answerable by the SPA.
+	@consent_page {
+		path /oauth2/authorize
+		header Accept *text/html*
+	}
+	handle @consent_page {
+		reverse_proxy frontend:90
+	}
+
 	handle /oauth2/* {
 		reverse_proxy backend:8080 {
 			import forwarded

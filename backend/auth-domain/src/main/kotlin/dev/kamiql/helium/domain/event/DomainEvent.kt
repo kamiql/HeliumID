@@ -2,10 +2,13 @@ package dev.kamiql.helium.domain.event
 
 import dev.kamiql.helium.domain.common.ClientId
 import dev.kamiql.helium.domain.common.SessionId
+import dev.kamiql.helium.domain.common.TrustedDeviceId
 import dev.kamiql.helium.domain.common.UserId
 import dev.kamiql.helium.domain.identity.ProviderKey
 import dev.kamiql.helium.domain.mfa.MfaType
 import dev.kamiql.helium.domain.session.SessionRevocationReason
+import dev.kamiql.helium.domain.session.TrustedDeviceRevocationReason
+import java.time.Instant
 
 /**
  * Something that happened, stated in past tense.
@@ -105,6 +108,45 @@ sealed interface DomainEvent {
         override val type = "auth.session-revoked"
     }
 
+    // --- trusted devices ------------------------------------------------------
+
+    /** The user asked to skip MFA on this device for the configured window. */
+    data class TrustedDeviceAdded(
+        override val userId: UserId,
+        val deviceId: TrustedDeviceId,
+        val expiresAt: Instant,
+    ) : DomainEvent {
+        override val type = "auth.trusted-device-added"
+    }
+
+    /** A login skipped the MFA challenge because the device was trusted. */
+    data class TrustedDeviceUsed(
+        override val userId: UserId,
+        val deviceId: TrustedDeviceId,
+    ) : DomainEvent {
+        override val type = "auth.trusted-device-used"
+    }
+
+    data class TrustedDeviceRevoked(
+        override val userId: UserId,
+        val deviceId: TrustedDeviceId?,
+        val reason: TrustedDeviceRevocationReason,
+        val count: Int,
+    ) : DomainEvent {
+        override val type = "auth.trusted-device-revoked"
+    }
+
+    /**
+     * A superseded device cookie was presented again — the value was copied off the machine.
+     * Ranks with [RefreshTokenReuseDetected]: the device is revoked and the owner is told.
+     */
+    data class TrustedDeviceReuseDetected(
+        override val userId: UserId,
+        val deviceId: TrustedDeviceId,
+    ) : DomainEvent {
+        override val type = "auth.trusted-device-reuse-detected"
+    }
+
     // --- MFA ----------------------------------------------------------------
 
     data class MfaEnrolled(override val userId: UserId, val method: MfaType) : DomainEvent {
@@ -167,6 +209,30 @@ sealed interface DomainEvent {
         val actorUserId: UserId?,
     ) : DomainEvent {
         override val type = "client.secret-rotated"
+        override val userId: UserId? get() = actorUserId
+    }
+
+    // --- scopes -----------------------------------------------------------------
+
+    /**
+     * A scope was created or its description changed.
+     *
+     * Worth auditing even though it grants nothing on its own: the consent screen shows the
+     * description verbatim, so editing one silently changes what users believe they agreed to.
+     */
+    data class ScopeUpserted(
+        val scope: String,
+        val actorUserId: UserId?,
+    ) : DomainEvent {
+        override val type = "scope.upserted"
+        override val userId: UserId? get() = actorUserId
+    }
+
+    data class ScopeDeleted(
+        val scope: String,
+        val actorUserId: UserId?,
+    ) : DomainEvent {
+        override val type = "scope.deleted"
         override val userId: UserId? get() = actorUserId
     }
 }

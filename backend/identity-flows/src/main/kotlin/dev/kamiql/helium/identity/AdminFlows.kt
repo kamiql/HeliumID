@@ -12,6 +12,7 @@ import dev.kamiql.helium.domain.repository.RoleRepository
 import dev.kamiql.helium.domain.repository.SessionRepository
 import dev.kamiql.helium.domain.repository.UserRepository
 import dev.kamiql.helium.domain.session.SessionRevocationReason
+import dev.kamiql.helium.domain.session.TrustedDeviceRevocationReason
 import dev.kamiql.helium.domain.user.UserStatus
 import dev.kamiql.helium.flow.Flow
 import dev.kamiql.helium.flow.FlowId
@@ -38,6 +39,7 @@ class AdminFlows(
     private val roles: RoleRepository,
     private val sessions: SessionRepository,
     private val refreshTokens: RefreshTokenRepository,
+    private val trustedDevices: TrustedDeviceService,
     private val lifetimes: Lifetimes = Lifetimes.DEFAULT,
 ) {
 
@@ -88,6 +90,9 @@ class AdminFlows(
                             command.userId, context.now, SessionRevocationReason.ADMIN_ACTION,
                         )
                         refreshTokens.revokeFamiliesForUser(command.userId, context.now)
+                        trustedDevices.revokeAll(
+                            command.userId, context.now, TrustedDeviceRevocationReason.ADMIN_ACTION,
+                        )
                     }
                 },
             )
@@ -160,6 +165,12 @@ class AdminFlows(
                         command.userId, context.now, SessionRevocationReason.ADMIN_ACTION,
                     )
                     refreshTokens.revokeFamiliesForUser(command.userId, context.now)
+                    // "Sign this account out everywhere" has to mean everywhere. A surviving
+                    // device exemption would let whoever prompted the revocation back in with
+                    // the password alone.
+                    trustedDevices.revokeAll(
+                        command.userId, context.now, TrustedDeviceRevocationReason.ADMIN_ACTION,
+                    )
                     state[revokedKey] = count
                     state[subjectKey] = command.userId
                     StepResult.Continue

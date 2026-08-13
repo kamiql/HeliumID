@@ -1,12 +1,14 @@
-import { Button, CircularProgress, Stack, TextField, Typography } from "@mui/material"
-import MarkEmailReadOutlinedIcon from "@mui/icons-material/MarkEmailReadOutlined"
+import { Box, Button, Divider, Stack, TextField, Typography } from "@mui/material"
+import CheckCircleOutlinedIcon from "@mui/icons-material/CheckCircleOutlined"
 import { useEffect, useRef, useState } from "react"
 import { Link, useSearchParams } from "react-router"
 import AuthCard from "../../components/auth/AuthCard.tsx"
 import ErrorAlert from "../../components/ErrorAlert.tsx"
 import EmailField from "../../components/EmailField.tsx"
+import { LoadingState } from "../../components/ui/StateView.tsx"
 import { authApi } from "../../api/auth.ts"
 import { notify } from "../../stores/notice.store.ts"
+import { MONO_FONT } from "../../lib/theme.ts"
 
 type Phase = "verifying" | "done" | "failed" | "manual"
 
@@ -23,7 +25,19 @@ export default function VerifyEmailPage() {
     const [phase, setPhase] = useState<Phase>(token ? "verifying" : "manual")
     const [error, setError] = useState<unknown>(null)
     const [email, setEmail] = useState("")
+    const [code, setCode] = useState("")
     const attempted = useRef(false)
+
+    const verify = (candidate: string) => {
+        setPhase("verifying")
+        authApi
+            .verifyEmail(candidate)
+            .then(() => setPhase("done"))
+            .catch((caught: unknown) => {
+                setError(caught)
+                setPhase("failed")
+            })
+    }
 
     useEffect(() => {
         if (!token || attempted.current) return
@@ -50,90 +64,118 @@ export default function VerifyEmailPage() {
         }
     }
 
+    const done = phase === "done"
+
     return (
         <AuthCard
-            icon={<MarkEmailReadOutlinedIcon />}
-            title="Verify email"
-            iconColor={phase === "done" ? "success.main" : "primary.main"}
+            title={done ? "Email verified" : "Verify email"}
+            statusIcon={done ? <CheckCircleOutlinedIcon /> : undefined}
+            statusTone="success"
+            subtitle={
+                phase === "manual"
+                    ? "Paste the code from your email, or request a new link."
+                    : undefined
+            }
         >
-            <Stack spacing={2}>
-                {phase === "verifying" && (
-                    <Stack spacing={2} sx={{ alignItems: "center" }}>
-                        <CircularProgress />
-                        <Typography sx={{ color: "text.secondary" }}>
-                            Confirming your email address…
+            {phase === "verifying" && <LoadingState label="Confirming your email address…" />}
+
+            {done && (
+                <Stack spacing={3}>
+                    <Typography sx={{ color: "text.secondary", textAlign: "center" }}>
+                        Your email address is verified. You can sign in now.
+                    </Typography>
+
+                    <Button component={Link} to="/login" fullWidth variant="contained">
+                        Continue to sign in
+                    </Button>
+                </Stack>
+            )}
+
+            {(phase === "failed" || phase === "manual") && (
+                <Stack spacing={2}>
+                    {/* Also covers a failed resend, which leaves the phase alone. */}
+                    {error !== null && <ErrorAlert error={error} />}
+
+                    {phase === "failed" && (
+                        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                            That link is no longer valid. Request a new one below.
                         </Typography>
-                    </Stack>
-                )}
+                    )}
 
-                {phase === "done" && (
-                    <>
-                        <Typography sx={{ color: "text.secondary", textAlign: "center" }}>
-                            Your email address is verified. You can sign in now.
-                        </Typography>
-
-                        <Button component={Link} to="/login" fullWidth variant="contained">
-                            Continue to sign in
-                        </Button>
-                    </>
-                )}
-
-                {(phase === "failed" || phase === "manual") && (
-                    <>
-                        {phase === "failed" && <ErrorAlert error={error} />}
-
-                        <Typography sx={{ color: "text.secondary" }}>
-                            {phase === "failed"
-                                ? "That link is no longer valid. Request a new one below."
-                                : "Paste the code from your email, or request a new link."}
-                        </Typography>
-
-                        {phase === "manual" && (
-                            <TextField
-                                fullWidth
-                                label="Verification code"
-                                onKeyDown={(event) => {
-                                    if (event.key !== "Enter") return
-                                    const value = (event.target as HTMLInputElement).value.trim()
-                                    if (!value) return
-                                    setPhase("verifying")
-                                    authApi
-                                        .verifyEmail(value)
-                                        .then(() => setPhase("done"))
-                                        .catch((caught: unknown) => {
-                                            setError(caught)
-                                            setPhase("failed")
-                                        })
-                                }}
-                                helperText="Press Enter to submit"
-                            />
-                        )}
-
-                        <EmailField
-                            fullWidth
-                            label="Email address"
-                            value={email}
-                            onType={(value) => {
-                                setEmail(value)
-                                setError(null)
+                    {phase === "manual" && (
+                        <Box
+                            component="form"
+                            onSubmit={(event) => {
+                                event.preventDefault()
+                                const candidate = code.trim()
+                                if (!candidate) return
+                                verify(candidate)
                             }}
-                        />
-
-                        <Button
-                            fullWidth
-                            variant="contained"
-                            disabled={!email}
-                            onClick={() => void handleResend()}
                         >
-                            Resend verification email
-                        </Button>
+                            <Stack spacing={2}>
+                                <TextField
+                                    fullWidth
+                                    autoFocus
+                                    label="Verification code"
+                                    value={code}
+                                    onChange={(event) => {
+                                        setCode(event.target.value)
+                                        setError(null)
+                                    }}
+                                    slotProps={{
+                                        input: { sx: { fontFamily: MONO_FONT } },
+                                    }}
+                                />
 
-                        <Button component={Link} to="/login" fullWidth variant="text">
-                            Back to sign in
-                        </Button>
-                    </>
-                )}
-            </Stack>
+                                <Button
+                                    type="submit"
+                                    fullWidth
+                                    variant="contained"
+                                    disabled={code.trim().length === 0}
+                                >
+                                    Verify email
+                                </Button>
+                            </Stack>
+                        </Box>
+                    )}
+
+                    {phase === "manual" && (
+                        <Divider sx={{ my: 1 }}>
+                            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                                or
+                            </Typography>
+                        </Divider>
+                    )}
+
+                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                        Nothing in your inbox? Check your spam folder, then send yourself a fresh
+                        link.
+                    </Typography>
+
+                    <EmailField
+                        fullWidth
+                        label="Email address"
+                        value={email}
+                        onType={(value) => {
+                            setEmail(value)
+                            setError(null)
+                        }}
+                    />
+
+                    <Button
+                        fullWidth
+                        variant={phase === "manual" ? "outlined" : "contained"}
+                        disabled={!email}
+                        onClick={() => void handleResend()}
+                    >
+                        Resend verification email
+                    </Button>
+
+                    <Button component={Link} to="/login" fullWidth variant="text">
+                        Back to sign in
+                    </Button>
+                </Stack>
+            )}
         </AuthCard>
     )
 }

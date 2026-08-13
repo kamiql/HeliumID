@@ -97,9 +97,8 @@ class TotpMfaMethod(
             ),
         )
 
-        return EnrollmentChallenge(
+        return EnrollmentChallenge.Totp(
             factorId = factor.id,
-            type = MfaType.TOTP,
             secret = secretBase32,
             provisioningUri = provisioningUri(secretBase32, user.primaryEmail.display),
         )
@@ -149,10 +148,13 @@ class TotpMfaMethod(
      * so the loop does not leak which step matched through timing.
      */
     private fun matchStep(totp: TotpFactor, response: MfaResponse, now: Instant): Long? {
+        // Anything but a typed code is a client sending the wrong ceremony's output at this
+        // method; treated as a miss rather than an error, so it cannot be used to probe.
+        val supplied = (response as? MfaResponse.Code)?.value?.reveal()?.trim() ?: return null
+        if (supplied.length != totp.digits || supplied.any { !it.isDigit() }) return null
+
         val secret = decryptSecret(totp) ?: return null
         val currentStep = now.epochSecond / totp.periodSeconds
-        val supplied = response.code.reveal().trim()
-        if (supplied.length != totp.digits || supplied.any { !it.isDigit() }) return null
 
         var matched: Long? = null
         for (offset in -windowSteps..windowSteps) {

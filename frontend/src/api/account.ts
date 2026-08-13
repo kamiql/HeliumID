@@ -9,11 +9,18 @@ import type {
     RecoveryCodes,
     SessionInfo,
     TokenRequestBody,
+    TrustedDevice,
+    TrustedDevicesRevokedResponse,
     TotpConfirmRequest,
     TotpDisableRequest,
     TotpEnrollment,
     UpdateProfileRequest,
     User,
+    WebauthnConfirmRequest,
+    WebauthnConfirmResponse,
+    WebauthnEnrollment,
+    WebauthnEnrollRequest,
+    WebauthnRemoveRequest,
 } from "./types.ts"
 
 /** `/v1/me` — account self-service. */
@@ -43,6 +50,18 @@ export const accountApi = {
     revokeSession: (sessionId: string) =>
         api.delete<void>(`/v1/me/sessions/${encodeURIComponent(sessionId)}`),
 
+    // --- trusted devices ---------------------------------------------------------
+
+    trustedDevices: () => api.get<TrustedDevice[]>("/v1/me/trusted-devices"),
+
+    /** Revoking is the only way back: the device otherwise skips MFA until it expires. */
+    revokeTrustedDevice: (deviceId: string) =>
+        api.delete<void>(`/v1/me/trusted-devices/${encodeURIComponent(deviceId)}`),
+
+    /** Includes the caller's own device — the server drops this browser's cookie too. */
+    revokeAllTrustedDevices: () =>
+        api.delete<TrustedDevicesRevokedResponse>("/v1/me/trusted-devices"),
+
     // --- MFA ------------------------------------------------------------------
 
     factors: () => api.get<MfaFactor[]>("/v1/me/mfa"),
@@ -57,6 +76,23 @@ export const accountApi = {
     disableTotp: (request: TotpDisableRequest) => api.post<void>("/v1/me/mfa/totp/disable", request),
 
     regenerateRecoveryCodes: () => api.post<RecoveryCodes>("/v1/me/mfa/recovery-codes"),
+
+    // --- passkeys ---------------------------------------------------------------
+
+    /**
+     * Reserves a `PENDING` factor and returns the registration options for it. The credential
+     * only exists once [confirmWebauthn] hands the attestation back for the same `factor_id`.
+     */
+    enrollWebauthn: (request: WebauthnEnrollRequest) =>
+        api.post<WebauthnEnrollment>("/v1/me/mfa/webauthn/enroll", request),
+
+    /** Carries recovery codes when this passkey is what turned two-factor on, `null` otherwise. */
+    confirmWebauthn: (request: WebauthnConfirmRequest) =>
+        api.post<WebauthnConfirmResponse>("/v1/me/mfa/webauthn/confirm", request),
+
+    /** A `POST`, not a `DELETE`: removal carries a password in the body. */
+    removeWebauthn: (request: WebauthnRemoveRequest) =>
+        api.post<void>("/v1/me/mfa/webauthn/remove", request),
 
     // --- linked providers -------------------------------------------------------
 

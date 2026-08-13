@@ -38,11 +38,72 @@ export type LoginRequest = {
 
 export type MfaMethod = "totp" | "recovery_code" | "webauthn"
 
+/**
+ * How hard the authenticator must prove the *user* is present, as opposed to the key.
+ *
+ * The server decides this per ceremony; the client only passes it through to the browser.
+ */
+export type WebauthnUserVerification = "required" | "preferred" | "discouraged"
+
+/** `POST /v1/auth/mfa/challenge` — fetches the material for one method of a live transaction. */
+export type MfaChallengeRequest = {
+    transaction_id: string
+    method: MfaMethod
+}
+
+/** Authentication ceremony options. Binary fields are base64url, never standard base64. */
+export type WebauthnAssertionOptions = {
+    challenge: string
+    rp_id: string
+    /** Credentials enrolled on this account. Empty means "any", which we never ask for. */
+    allow_credential_ids: string[]
+    user_verification: WebauthnUserVerification
+    timeout_ms: number
+}
+
+/**
+ * `webauthn` is **absent** for methods that need no server-issued challenge, i.e. all but one.
+ *
+ * Optional rather than nullable throughout: the backend serialises with `explicitNulls = false`,
+ * so an empty field is a missing key and never a `null` to compare against.
+ */
+export type MfaChallengeResponse = {
+    method: string
+    webauthn?: WebauthnAssertionOptions
+}
+
+/** What the authenticator signed, base64url-encoded for the wire. */
+export type WebauthnAssertion = {
+    credential_id: string
+    client_data_json: string
+    authenticator_data: string
+    signature: string
+    /** Only present for discoverable credentials; a second factor usually omits it. */
+    user_handle: string | null
+}
+
 export type MfaVerifyRequest = {
     transaction_id: string
     method: MfaMethod
-    code: string
+    /** Exactly one of `code` and `webauthn` is sent, and it matches `method`. */
+    code?: string
+    webauthn?: WebauthnAssertion
+    /**
+     * Opt-in. On success the server sets its own `HttpOnly` device cookie; the client never
+     * sees or keeps a token of its own.
+     */
+    remember_device?: boolean
 }
+
+/**
+ * The second factor as the UI collects it, before it becomes an [MfaVerifyRequest].
+ *
+ * A union rather than one type with two optional payloads: the endpoint accepts exactly one of
+ * `code` and `webauthn`, and this is the shape that makes sending both unrepresentable.
+ */
+export type MfaSecondFactor =
+    | { method: "totp" | "recovery_code"; code: string }
+    | { method: "webauthn"; assertion: WebauthnAssertion }
 
 export type TokenRequestBody = {
     token: string
@@ -128,6 +189,21 @@ export type SessionInfo = {
     current: boolean
 }
 
+export type TrustedDevice = {
+    id: string
+    /** Derived from the user agent, so a hint rather than an identification. */
+    label: string | null
+    created_at: string
+    last_used_at: string
+    /** Absolute and non-sliding: when the device stops being able to skip the challenge. */
+    expires_at: string
+}
+
+/** `revoked` is a count for the confirmation copy, not a success signal — zero is normal. */
+export type TrustedDevicesRevokedResponse = {
+    revoked: number
+}
+
 export type LinkedProvider = {
     provider: string
     email: string | null
@@ -165,6 +241,62 @@ export type TotpConfirmRequest = {
 }
 
 export type TotpDisableRequest = {
+    factor_id: string
+    current_password?: string | null
+}
+
+/** The body is required even when there is nothing to say — an empty request is rejected. */
+export type WebauthnEnrollRequest = {
+    /** Optional nickname for the key. `null` lets the server pick something generic. */
+    label: string | null
+}
+
+/** Registration ceremony options. Binary fields are base64url, never standard base64. */
+export type WebauthnEnrollOptions = {
+    challenge: string
+    rp_id: string
+    rp_name: string
+    user_handle: string
+    user_name: string
+    user_display_name: string
+    /** COSE algorithm identifiers, most preferred first — e.g. `-7` for ES256. */
+    algorithms: number[]
+    /** Credentials already enrolled, so an authenticator can refuse to register twice. */
+    exclude_credential_ids: string[]
+    user_verification: WebauthnUserVerification
+    timeout_ms: number
+}
+
+/** The factor exists as `PENDING` from here; it only counts once the ceremony is confirmed. */
+export type WebauthnEnrollment = {
+    factor_id: string
+    options: WebauthnEnrollOptions
+}
+
+/** What the authenticator produced during registration, base64url-encoded for the wire. */
+export type WebauthnRegistration = {
+    credential_id: string
+    client_data_json: string
+    attestation_object: string
+    /** From `getTransports()`; empty when the browser does not report them. */
+    transports: string[]
+}
+
+export type WebauthnConfirmRequest = WebauthnRegistration & {
+    factor_id: string
+    label: string | null
+}
+
+/**
+ * `recovery_codes` is present only when this passkey is what turned two-factor on — the same
+ * once-and-never-again payload TOTP enrollment returns. Absent, not `null`, otherwise.
+ */
+export type WebauthnConfirmResponse = {
+    factor_id: string
+    recovery_codes?: string[]
+}
+
+export type WebauthnRemoveRequest = {
     factor_id: string
     current_password?: string | null
 }

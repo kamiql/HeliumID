@@ -3,8 +3,8 @@
 # VERSION 2 IS A PROOF OF CONCEPT TO EXPERIMENT WITH CLAUDE CODE
 
 A standards-based identity and authorization provider written in Kotlin and Ktor: local accounts,
-OAuth 2.0 / OpenID Connect, external identity providers, TOTP, and an account API for web, SPA,
-native and subsidiary applications.
+OAuth 2.0 / OpenID Connect, external identity providers, TOTP, WebAuthn passkeys as a second
+factor, and an account API for web, SPA, native and subsidiary applications.
 
 ---
 
@@ -51,6 +51,7 @@ never declare a Ktor, JDBC, Redis or provider-SDK dependency, so importing one i
 | `protocol-oauth2-oidc` | Authorization, token, revocation, introspection, discovery, JWKS, PKCE, signing keys. |
 | `provider-oidc` | Generic OIDC adapter; Google preconfigured. |
 | `mfa-totp` | TOTP enrolment, challenge, recovery codes. |
+| `mfa-webauthn` | WebAuthn ceremony verification for passkeys used as a second factor. |
 | `security-crypto` | Argon2id, HMAC token hashing, AES-GCM envelope encryption, key provider. |
 | `persistence-postgres` | Exposed repositories, Hikari, Flyway migrations, audit and outbox tables. |
 | `persistence-redis` | Rate limiter and security-transaction store, each with an in-memory fallback. |
@@ -192,12 +193,24 @@ Owner Password Credentials grant is not implemented and will not be.
 | `GET` | `/v1/auth/password-requirements` |
 | `POST` | `/v1/auth/register` |
 | `POST` | `/v1/auth/login` — first-party / BFF only, not a replacement for `/oauth2/authorize` |
-| `POST` | `/v1/auth/mfa/verify` |
+| `POST` | `/v1/auth/mfa/challenge` — issues the WebAuthn request options for a pending MFA transaction |
+| `POST` | `/v1/auth/mfa/verify` — accepts either a `code` (TOTP or recovery code) or a `webauthn` assertion |
 | `POST` | `/v1/auth/logout` |
 | `POST` | `/v1/auth/email/verify`, `/v1/auth/email/resend` |
 | `POST` | `/v1/auth/password-reset/request`, `/v1/auth/password-reset/complete` |
 | `GET` | `/v1/auth/providers` |
 | `GET` | `/v1/auth/providers/{provider}/start`, `/v1/auth/providers/{provider}/callback` |
+
+Passkeys are a **second** factor, not a replacement for the password. `/v1/auth/login` runs first
+and returns an MFA challenge; `/v1/auth/mfa/challenge` turns that challenge into
+`PublicKeyCredentialRequestOptions`; `/v1/auth/mfa/verify` consumes the resulting assertion in place
+of a `code`. Passwordless passkey sign-in is deliberately out of scope and the reasoning is recorded
+in [`docs/threat-model.md`](docs/threat-model.md) §5.
+
+The relying party is configured with `HELIUM_WEBAUTHN_RP_ID`, `HELIUM_WEBAUTHN_RP_NAME` and
+`HELIUM_WEBAUTHN_ORIGINS`. That binding is what makes a passkey phishing-resistant, so it is
+validated at startup: the rp id must be the host of every configured origin or a parent of it,
+origins must be `https` outside loopback, and the process refuses to start otherwise.
 
 ### Account
 
@@ -207,8 +220,10 @@ Owner Password Credentials grant is not implemented and will not be.
 | `POST` | `/v1/me/email-change`, `/v1/me/email-change/confirm` |
 | `POST` | `/v1/me/delete` |
 | `GET` / `DELETE` | `/v1/me/sessions`, `/v1/me/sessions/{sessionId}` |
+| `GET` / `DELETE` | `/v1/me/trusted-devices`, `/v1/me/trusted-devices/{id}` |
 | `GET` | `/v1/me/mfa` |
 | `POST` | `/v1/me/mfa/totp/enroll`, `/v1/me/mfa/totp/confirm`, `/v1/me/mfa/totp/disable` |
+| `POST` | `/v1/me/mfa/webauthn/enroll`, `/v1/me/mfa/webauthn/confirm`, `/v1/me/mfa/webauthn/remove` |
 | `POST` | `/v1/me/mfa/recovery-codes` |
 | `GET` | `/v1/me/providers` |
 

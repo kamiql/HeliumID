@@ -1,83 +1,52 @@
-import {
-    AppBar,
-    Backdrop,
-    Box,
-    CircularProgress,
-    Container,
-    Toolbar,
-    Typography,
-} from "@mui/material"
-import { Link, Outlet } from "react-router"
+import { Box, LinearProgress } from "@mui/material"
+import { Outlet } from "react-router"
 import { useRequestStore } from "../../stores/request.store.ts"
-import ThemeToggle from "./ThemeToggle.tsx"
 
+/**
+ * The root shell.
+ *
+ * It deliberately renders no chrome of its own: the signed-out pages get theirs from
+ * [AuthLayout] and the signed-in area from `DashboardPage`, so neither ends up nested inside
+ * a header meant for the other.
+ *
+ * The only thing that belongs at this level is the global request indicator.
+ */
 export default function Layout() {
     const activeRequests = useRequestStore((state) => state.activeRequests)
+    const busy = activeRequests > 0
 
     return (
-        <Box
-            sx={{
-                minHeight: "100vh",
-                display: "flex",
-                flexDirection: "column",
-            }}
-        >
-            <AppBar
-                position="static"
-                elevation={0}
-                sx={{
-                    background: "transparent",
-                    borderBottom: "1px solid",
-                    borderColor: "divider",
-                }}
-            >
-                <Container maxWidth="lg">
-                    <Toolbar
-                        disableGutters
-                        sx={{
-                            justifyContent: "space-between",
-                        }}
-                    >
-                        <Typography
-                            component={Link}
-                            to="/"
-                            sx={{
-                                fontFamily: "Silkscreen, sans-serif",
-                                fontSize: "1.4rem",
-                                color: "text.primary",
-                                textDecoration: "none",
-                            }}
-                        >
-                            HeliumID
-                        </Typography>
-                        <ThemeToggle />
-                    </Toolbar>
-                </Container>
-            </AppBar>
-
+        <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+            {/*
+             * A progress bar rather than a blocking backdrop. Requests fire for background
+             * reads and for every debounced filter keystroke, and freezing the whole page for
+             * those made the app feel like it was constantly reloading. Forms guard against
+             * double submits by disabling their own submit button while in flight.
+             */}
             <Box
-                component="main"
+                aria-hidden={!busy}
                 sx={{
-                    flex: 1,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    py: 4,
+                    position: "fixed",
+                    inset: "0 0 auto 0",
+                    zIndex: (theme) => theme.zIndex.tooltip + 1,
+                    height: 3,
+                    pointerEvents: "none",
                 }}
             >
-                <Outlet />
+                {busy && <LinearProgress sx={{ height: 3 }} />}
             </Box>
 
-            <Backdrop
-                open={activeRequests > 0}
-                sx={{
-                    zIndex: (theme) => theme.zIndex.modal + 1,
-                    backgroundColor: "rgba(11, 15, 25, 0.65)",
-                    backdropFilter: "blur(4px)",
-                }}
+            <Box
+                role="status"
+                aria-live="polite"
+                className="skip-link"
+                // Screen readers get the state the bar conveys visually.
+                sx={{ position: "absolute" }}
             >
-                <CircularProgress color="primary" />
-            </Backdrop>
+                {busy ? "Loading" : ""}
+            </Box>
+
+            <Outlet />
         </Box>
     )
 }

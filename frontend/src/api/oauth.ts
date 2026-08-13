@@ -4,8 +4,11 @@ import type { ConsentPrompt } from "./types.ts"
 /**
  * The authorization endpoint, as the built-in consent UI uses it.
  *
- * Caddy serves the SPA for `/oauth2/authorize`, so the consent screen is a front-end route that
- * re-issues the very same query string against the API. Three outcomes are possible:
+ * Caddy serves the SPA for `/oauth2/authorize` when — and only when — the request asks for
+ * `text/html`, so the consent screen is a front-end route that re-issues the very same query
+ * string against the API. The explicit `Accept: application/json` below is therefore load-bearing:
+ * without it this call would be routed back to the SPA and resolve to the page's own markup
+ * instead of the prompt. Three outcomes are possible:
  *
  *  * consent needed  — `200` with a [ConsentPrompt] for us to render;
  *  * consent not needed — a `302` to the client's redirect URI, which XHR cannot usefully

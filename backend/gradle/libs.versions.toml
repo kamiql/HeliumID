@@ -17,6 +17,7 @@ lettuce = "6.7.1.RELEASE"
 bouncycastle = "1.82"
 nimbus = "10.5"
 totp = "1.7.1"
+webauthn4j = "0.31.9.RELEASE"
 
 angusMail = "2.0.4"
 
@@ -49,6 +50,7 @@ lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
 bouncycastle-provider = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 nimbus-jose-jwt = { module = "com.nimbusds:nimbus-jose-jwt", version.ref = "nimbus" }
 totp = { module = "dev.samstevens.totp:totp", version.ref = "totp" }
+webauthn4j-core = { module = "com.webauthn4j:webauthn4j-core", version.ref = "webauthn4j" }
 
 angus-mail = { module = "org.eclipse.angus:angus-mail", version.ref = "angusMail" }
 

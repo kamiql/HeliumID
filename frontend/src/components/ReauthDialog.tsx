@@ -1,21 +1,22 @@
 import {
-    Alert,
+    Box,
     Button,
+    CircularProgress,
     Dialog,
     DialogActions,
     DialogContent,
+    DialogContentText,
     DialogTitle,
     Stack,
-    Typography,
 } from "@mui/material"
-import { useState } from "react"
+import { useId, useState } from "react"
 import PasswordField from "./PasswordField.tsx"
 import ErrorAlert from "./ErrorAlert.tsx"
 import MFADialog from "./MFADialog.tsx"
 import { useAuthStore, type MfaChallenge } from "../stores/auth.store.ts"
 import { useReauthStore } from "../stores/reauth.store.ts"
 import { notify } from "../stores/notice.store.ts"
-import type { MfaMethod } from "../api/types.ts"
+import type { MfaSecondFactor } from "../api/types.ts"
 
 /**
  * Step-up prompt for operations that demand recent proof of identity.
@@ -34,14 +35,24 @@ export default function ReauthDialog() {
 
     const [password, setPassword] = useState("")
     const [challenge, setChallenge] = useState<MfaChallenge | null>(null)
+    /**
+     * The second factor is a separate dialog, so it is held back until the password dialog has
+     * finished animating out. Two stacked modals on screen at once read as a glitch rather than
+     * as the second step of one flow.
+     */
+    const [challengeVisible, setChallengeVisible] = useState(false)
     const [error, setError] = useState<unknown>(null)
     const [busy, setBusy] = useState(false)
+
+    const titleId = useId()
+    const descriptionId = useId()
 
     if (!open || !user) return null
 
     const finish = () => {
         setPassword("")
         setChallenge(null)
+        setChallengeVisible(false)
         setError(null)
         close()
         notify("Identity confirmed. Please retry what you were doing.", "success")
@@ -70,8 +81,8 @@ export default function ReauthDialog() {
         }
     }
 
-    const handleMfa = async (method: MfaMethod, code: string) => {
-        await completeMfa(challenge!.transactionId, method, code)
+    const handleMfa = async (factor: MfaSecondFactor) => {
+        await completeMfa(challenge!.transactionId, factor)
         finish()
     }
 
@@ -82,18 +93,27 @@ export default function ReauthDialog() {
                 onClose={() => (busy ? undefined : close())}
                 fullWidth
                 maxWidth="xs"
+                aria-labelledby={titleId}
+                aria-describedby={descriptionId}
+                slotProps={{
+                    transition: {
+                        // Hand-off point: the code prompt only appears once this one is gone.
+                        onExited: () => setChallengeVisible(challenge !== null),
+                    },
+                }}
             >
-                <DialogTitle>Confirm your identity</DialogTitle>
+                <DialogTitle id={titleId}>Confirm your identity</DialogTitle>
 
                 <DialogContent>
                     <Stack spacing={2} sx={{ mt: 1 }}>
-                        <Alert severity="info">
-                            This action needs a recent sign-in. Enter your password to continue.
-                        </Alert>
-
-                        <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                            Signed in as <strong>{user.username}</strong>.
-                        </Typography>
+                        <DialogContentText id={descriptionId} variant="body2">
+                            This change needs a recent sign-in. Enter the password for{" "}
+                            <Box component="strong" sx={{ color: "text.primary", fontWeight: 600 }}>
+                                {user.username}
+                            </Box>{" "}
+                            to continue. If your account uses two-factor authentication, you will
+                            be asked for a code next.
+                        </DialogContentText>
 
                         <PasswordField
                             fullWidth
@@ -120,6 +140,7 @@ export default function ReauthDialog() {
                         variant="contained"
                         onClick={() => void handleSubmit()}
                         disabled={busy || !password}
+                        startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
                     >
                         Confirm
                     </Button>
@@ -127,10 +148,11 @@ export default function ReauthDialog() {
             </Dialog>
 
             <MFADialog
-                challenge={challenge}
+                challenge={challengeVisible ? challenge : null}
                 onSubmit={handleMfa}
                 onCancel={() => {
                     setChallenge(null)
+                    setChallengeVisible(false)
                     close()
                 }}
             />

@@ -1,0 +1,21 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    Startet den kompletten Dev-Stack: Caddy, Backend, SPA, Postgres, Redis, Mailpit.
+    Erreichbar auf http://localhost:90 (Mail-UI: /mail, Debugger: localhost:5005).
+
+    Das Env-File ist nicht optional: docker compose interpoliert die ${...}-Ausdrücke in
+    docker-compose.dev.yml daraus. Ohne den Eintrag fällt compose auf ./.env zurück und die
+    Datenbank, die Postgres anlegt, kann von der abweichen, gegen die das Backend verbindet.
+    Voraussetzung ist also einmalig:  cp .env.dev.example .env.dev
+  -->
+  <configuration default="false" name="Compose Dev" type="docker-deploy" factoryName="docker-compose.yml" server-name="Docker">
+    <deployment type="docker-compose.yml">
+      <settings>
+        <option name="envFilePath" value="$PROJECT_DIR$/.env.dev" />
+        <option name="sourceFilePath" value="docker-compose.dev.yml" />
+        <option name="commandLineOptions" value="--build" />
+      </settings>
+    </deployment>
+    <method v="2" />
+  </configuration>
+</component>

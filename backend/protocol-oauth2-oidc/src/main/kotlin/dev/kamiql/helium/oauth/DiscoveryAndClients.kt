@@ -95,6 +95,7 @@ class ClientAdminFlows(
     private val registeredKey = FlowStateKey<RegisteredClient>("registered_client", sensitive = true)
     private val secretKey = FlowStateKey<ClientSecretIssued>("client_secret", sensitive = true)
     private val clientIdKey = FlowStateKey<ClientId>("client_id")
+    private val scopeKey = FlowStateKey<Scope>("scope")
 
     val register: Flow<RegisterClientCommand, ClientSecretIssued> =
         flow(FlowId("admin.client.register")) {
@@ -252,6 +253,100 @@ class ClientAdminFlows(
                 step("delete") { command, _, _ ->
                     if (!clients.delete(command.clientId)) StepResult.Fail(AuthError.NotFound)
                     else StepResult.Continue
+                },
+            )
+
+            result { }
+        }
+
+    /**
+     * Creates a scope or edits its consent-screen text.
+     *
+     * Same requirement profile as the client flows above, and deliberately the same permission:
+     * a scope is one half of the contract a client is registered against, and an administrator
+     * who may define clients is already the person who defines what clients may ask for. A
+     * separate `admin:scope:write` would leave every existing ADMINISTRATOR role quietly
+     * incomplete after this deployment.
+     */
+    val upsertScope: Flow<UpsertScopeCommand, Scope> =
+        flow(FlowId("admin.scope.upsert")) {
+            transaction(TransactionPolicy.Required)
+            require(Authenticated)
+            require(ReauthenticatedWithin(lifetimes.reauthenticationWindow, sessions))
+            requirePermission(Permission.ADMIN_CLIENT_WRITE)
+
+            step(
+                step("upsert") { command, context, state ->
+                    if (!Scope.NAME_PATTERN.matches(command.name)) {
+                        return@step StepResult.Fail(AuthError.ValidationFailed(mapOf("name" to "invalid")))
+                    }
+                    if (command.description.isBlank() || command.description.length > 200) {
+                        return@step StepResult.Fail(
+                            AuthError.ValidationFailed(mapOf("description" to "invalid")),
+                        )
+                    }
+                    // Built-ins are protocol, not policy. Editing `openid`'s description would
+                    // reword the one scope users cannot decline, and marking it non-implicit
+                    // would put it on the consent screen as a refusable choice it is not.
+                    if (clients.findScope(command.name)?.builtIn == true) {
+                        return@step StepResult.Fail(AuthError.Conflict)
+                    }
+
+                    val saved = clients.upsertScope(
+                        Scope(
+                            name = command.name,
+                            description = command.description,
+                            implicit = command.implicit,
+                            builtIn = false,
+                        ),
+                        context.now,
+                    )
+                    state[scopeKey] = saved
+                    StepResult.Continue
+                },
+            )
+
+            effect(
+                effect("scope-upserted") { command, context, _ ->
+                    listOf(DomainEvent.ScopeUpserted(command.name, context.actor.userIdOrNull))
+                },
+            )
+
+            result { state -> state.require(scopeKey) }
+        }
+
+    /**
+     * Removes a scope from the catalogue.
+     *
+     * Refuses while any client still lists it. `oauth_client_scopes.scope` cascades, so an
+     * unguarded delete would strip the scope from those clients without a word and surface much
+     * later as `invalid_scope` on an authorization request that used to work. Detach it from the
+     * clients first — that way the decision is visible per client.
+     */
+    val deleteScope: Flow<DeleteScopeCommand, Unit> =
+        flow(FlowId("admin.scope.delete")) {
+            transaction(TransactionPolicy.Required)
+            require(Authenticated)
+            require(ReauthenticatedWithin(lifetimes.reauthenticationWindow, sessions))
+            requirePermission(Permission.ADMIN_CLIENT_WRITE)
+
+            step(
+                step("delete") { command, _, _ ->
+                    val existing = clients.findScope(command.name)
+                        ?: return@step StepResult.Fail(AuthError.NotFound)
+                    if (existing.builtIn) return@step StepResult.Fail(AuthError.Conflict)
+                    if (clients.clientsUsingScope(command.name) > 0) {
+                        return@step StepResult.Fail(AuthError.Conflict)
+                    }
+
+                    if (!clients.deleteScope(command.name)) StepResult.Fail(AuthError.NotFound)
+                    else StepResult.Continue
+                },
+            )
+
+            effect(
+                effect("scope-deleted") { command, context, _ ->
+                    listOf(DomainEvent.ScopeDeleted(command.name, context.actor.userIdOrNull))
                 },
             )
 

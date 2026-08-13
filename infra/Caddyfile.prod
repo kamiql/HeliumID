@@ -104,6 +104,26 @@
 		}
 	}
 
+	# Browser navigations to the authorization endpoint get the SPA's consent screen; every other
+	# caller gets the backend. See the dev Caddyfile for the full reasoning — short version:
+	# `GET /oauth2/authorize` answers 200 with a JSON consent prompt when the user has not yet
+	# approved the client, and a browser navigating here would render that raw.
+	#
+	# Scoped to this one path on purpose. The token, revoke and introspect endpoints must never be
+	# served by the SPA, whatever a caller puts in Accept.
+	@consent_page {
+		path /oauth2/authorize
+		header Accept *text/html*
+	}
+	handle @consent_page {
+		root * /srv
+		# Same no-store rule as index.html below: this response names the current bundle, and a
+		# cached one pins users to a build you may already have rolled back.
+		header Cache-Control "no-store"
+		rewrite * /index.html
+		file_server
+	}
+
 	handle /oauth2/* {
 		reverse_proxy backend:8080 {
 			import forwarded

@@ -1,7 +1,8 @@
-import { Typography } from "@mui/material"
+import { Alert, Stack, Typography } from "@mui/material"
 import { useState } from "react"
 import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx"
 import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx"
+import { ACCOUNT_ANCHORS } from "../../../../components/dashboard/account/AccountRequirement.tsx"
 import ErrorAlert from "../../../../components/ErrorAlert.tsx"
 import OneTimeSecretDialog from "../../../../components/OneTimeSecretDialog.tsx"
 import { useUser } from "../../../../hooks/useUser.ts"
@@ -12,7 +13,8 @@ import { accountApi } from "../../../../api/account.ts"
  * Regenerating replaces the whole set — every previously issued code stops working.
  *
  * Codes are stored hashed, exactly like passwords, so there is no way to show an existing set
- * again; the only recovery from a lost list is a new one.
+ * again; the only recovery from a lost list is a new one. For the same reason the page cannot
+ * say how many are left: the server has nothing to count that it would be willing to reveal.
  */
 export default function RecoveryCodesBox() {
     const user = useUser()
@@ -25,7 +27,8 @@ export default function RecoveryCodesBox() {
     const handleRegenerate = async () => {
         const confirmed = await confirm({
             title: "Regenerate recovery codes?",
-            message: "Your current recovery codes will stop working immediately.",
+            message:
+                "Every code from your current list stops working the moment the new set is created. Make sure you can save the new codes before you continue.",
             confirmText: "Regenerate",
         })
 
@@ -51,29 +54,40 @@ export default function RecoveryCodesBox() {
                 requirements={[
                     {
                         id: "mfa",
-                        label: "Two-factor authentication required",
+                        label: "Turn on two-factor authentication first",
+                        hint: "Recovery codes only exist once there is a second factor to recover from.",
+                        fix: {
+                            label: "Go to two-factor authentication",
+                            anchor: ACCOUNT_ANCHORS.totp,
+                        },
                         satisfied: user.mfa_enabled,
                     },
                 ]}
-                sx={{
-                    flex: "1 1 300px",
-                    minWidth: "250px",
-                }}
+                actions={
+                    <AccountButton
+                        variant="outlined"
+                        onClick={() => void handleRegenerate()}
+                        disabled={loading}
+                        aria-label="Regenerate recovery codes"
+                    >
+                        Regenerate
+                    </AccountButton>
+                }
             >
-                <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                    Codes are shown once when generated. If you have lost yours, generate a new
-                    set — the old ones stop working straight away.
-                </Typography>
+                <Stack sx={{ gap: 2 }}>
+                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                        Codes are shown once, when they are generated, and stored only as hashes —
+                        so we cannot show your current set again or tell you how many are left. If
+                        you are not sure you still have them, generate a new set.
+                    </Typography>
 
-                {error !== null && <ErrorAlert error={error} />}
+                    <Alert severity="warning">
+                        Generating a new set invalidates every earlier code immediately, including
+                        any you have printed or saved elsewhere.
+                    </Alert>
 
-                <AccountButton
-                    variant="outlined"
-                    onClick={() => void handleRegenerate()}
-                    disabled={loading}
-                >
-                    Regenerate recovery codes
-                </AccountButton>
+                    {error !== null && <ErrorAlert error={error} />}
+                </Stack>
             </AccountBox>
 
             <OneTimeSecretDialog

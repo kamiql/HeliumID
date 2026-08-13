@@ -41,6 +41,7 @@ data class HttpSecurityConfig(
     val sessionCookieName: String = if (secureCookies) "__Host-helium_session" else "helium_session",
     val csrfCookieName: String = if (secureCookies) "__Host-helium_csrf" else "helium_csrf",
     val providerStateCookieName: String = if (secureCookies) "__Host-helium_pstate" else "helium_pstate",
+    val trustedDeviceCookieName: String = if (secureCookies) "__Host-helium_tdevice" else "helium_tdevice",
 ) {
     init {
         require(allowedOrigins.none { it == "*" }) {
@@ -79,6 +80,51 @@ fun ApplicationCall.setSessionCookie(config: HttpSecurityConfig, value: String, 
 fun ApplicationCall.clearSessionCookie(config: HttpSecurityConfig) {
     response.cookies.append(
         name = config.sessionCookieName,
+        value = "",
+        encoding = CookieEncoding.RAW,
+        maxAge = 0,
+        path = "/",
+        secure = config.secureCookies,
+        httpOnly = true,
+        extensions = mapOf("SameSite" to config.sameSite),
+    )
+}
+
+/**
+ * Sets the trusted-device cookie.
+ *
+ * `HttpOnly` even though the SPA drives the "remember this device" checkbox: the checkbox is an
+ * input to the flow, the cookie is the resulting credential, and nothing in the page ever needs
+ * to read it back. Leaving it script-readable would mean an XSS could lift a value that skips the
+ * second factor on the *next* login — a credential that survives the session it was stolen from.
+ *
+ * @param maxAgeSeconds should track the device record's absolute expiry. The server would reject
+ *        a stale cookie anyway, but a browser that keeps sending one turns every subsequent login
+ *        into a lookup that can only fail.
+ */
+fun ApplicationCall.setTrustedDeviceCookie(config: HttpSecurityConfig, value: String, maxAgeSeconds: Long) {
+    response.cookies.append(
+        name = config.trustedDeviceCookieName,
+        value = value,
+        encoding = CookieEncoding.RAW,
+        maxAge = maxAgeSeconds,
+        path = "/",
+        secure = config.secureCookies,
+        httpOnly = true,
+        extensions = mapOf("SameSite" to config.sameSite),
+    )
+}
+
+/**
+ * Deletes the trusted-device cookie.
+ *
+ * Worth doing eagerly whenever the server-side record is gone. The value is inert once the record
+ * is revoked, but a browser that keeps offering it is still shipping a dead credential on every
+ * request to this origin, and a user who asked to be forgotten is entitled to see it disappear.
+ */
+fun ApplicationCall.clearTrustedDeviceCookie(config: HttpSecurityConfig) {
+    response.cookies.append(
+        name = config.trustedDeviceCookieName,
         value = "",
         encoding = CookieEncoding.RAW,
         maxAge = 0,

@@ -604,6 +604,35 @@ public class HeliumIdClient private constructor(
         call(HttpMethod.Get, "/v1/admin/scopes").heliumBody()
 
     /**
+     * Creates a scope or replaces its description and consent behaviour.
+     *
+     * Register the scopes your API needs before registering the client that requests them:
+     * [registerClient] rejects any scope this catalogue does not contain.
+     *
+     * @param name lowercase, 3–64 characters from `a-z 0-9 : . _ -`. The colon is there for the
+     *        conventional `resource:action` shape. Whitespace is rejected — the `scope` parameter
+     *        is space-delimited, so a name with a space would split in two on the wire.
+     * @throws HeliumApiException with [HeliumError.Conflict] for a built-in scope (`openid`,
+     *         `profile`, `email`, `offline_access`), which the server will not let you edit.
+     */
+    public suspend fun upsertScope(name: String, request: UpsertScopeRequest): ScopeResponse =
+        call(HttpMethod.Put, "/v1/admin/scopes/${name.encodeURLPathPart()}") {
+            jsonBody(request)
+        }.heliumBody()
+
+    /**
+     * Removes a scope from the catalogue.
+     *
+     * @throws HeliumApiException with [HeliumError.Conflict] when the scope is built in, or when
+     *         a registered client still lists it — detach it from those clients first. Deleting
+     *         it out from under them would strip the scope silently and only surface later as
+     *         `invalid_scope` on an authorization request that used to work.
+     */
+    public suspend fun deleteScope(name: String) {
+        call(HttpMethod.Delete, "/v1/admin/scopes/${name.encodeURLPathPart()}").heliumEnsureSuccess()
+    }
+
+    /**
      * Registers an OAuth client.
      *
      * @return the client id and, for confidential clients, the generated secret. This is the

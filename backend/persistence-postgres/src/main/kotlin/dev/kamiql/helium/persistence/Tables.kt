@@ -112,6 +112,34 @@ object TotpFactorsTable : Table("totp_factors") {
     override val primaryKey = PrimaryKey(factorId)
 }
 
+/**
+ * Registered passkeys.
+ *
+ * `id` **is** the owning `mfa_factors.id` — the same one-row-per-factor shape [TotpFactorsTable]
+ * has, which is why the domain calls it `factorId`. V4 adds the foreign key that enforces it.
+ *
+ * Nothing in this table is secret: the private key never leaves the authenticator, so the stored
+ * public key lets a holder of a dump verify signatures, never produce them. That is why these
+ * columns are plain `bytea` while the TOTP secret next door is encrypted.
+ */
+object WebAuthnCredentialsTable : Table("webauthn_credentials") {
+    val id = javaUuid("id")
+    val userId = javaUuid("user_id")
+    val credentialId = binary("credential_id")
+    val publicKey = binary("public_key")
+    val signatureCounter = long("signature_counter")
+    val aaguid = javaUuid("aaguid").nullable()
+    val transports = varchar("transports", 128)
+    val userVerifiedRequired = bool("user_verified_required")
+    val backupEligible = bool("backup_eligible")
+    val backupState = bool("backup_state")
+    val rpId = varchar("rp_id", 255)
+    val createdAt = timestampWithTimeZone("created_at")
+    val lastUsedAt = timestampWithTimeZone("last_used_at").nullable()
+
+    override val primaryKey = PrimaryKey(id)
+}
+
 object RecoveryCodesTable : Table("recovery_codes") {
     val id = javaUuid("id")
     val userId = javaUuid("user_id")
@@ -154,10 +182,28 @@ object SessionsTable : Table("sessions") {
     override val primaryKey = PrimaryKey(id)
 }
 
+object TrustedDevicesTable : Table("trusted_devices") {
+    val id = javaUuid("id")
+    val userId = javaUuid("user_id")
+    val tokenHash = varchar("token_hash", 128)
+    val previousTokenHash = varchar("previous_token_hash", 128).nullable()
+    val label = varchar("label", 128).nullable()
+    val createdAt = timestampWithTimeZone("created_at")
+    val lastUsedAt = timestampWithTimeZone("last_used_at")
+    val expiresAt = timestampWithTimeZone("expires_at")
+    val revokedAt = timestampWithTimeZone("revoked_at").nullable()
+    val revokedReason = varchar("revoked_reason", 32).nullable()
+
+    override val primaryKey = PrimaryKey(id)
+}
+
 object OAuthScopesTable : Table("oauth_scopes") {
     val name = varchar("name", 128)
     val description = text("description")
     val implicit = bool("implicit")
+
+    /** Protocol-level scope the write path refuses to change. See V5__scope_built_in.sql. */
+    val builtIn = bool("built_in")
     val createdAt = timestampWithTimeZone("created_at")
 
     override val primaryKey = PrimaryKey(name)

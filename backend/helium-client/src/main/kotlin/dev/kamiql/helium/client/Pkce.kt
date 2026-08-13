@@ -48,9 +48,7 @@ public object Pkce {
         require(entropyBytes in 32..96) {
             "entropyBytes must be between 32 and 96 to stay inside RFC 7636's 43..128 character range"
         }
-        val bytes = ByteArray(entropyBytes)
-        SecureRandom().nextBytes(bytes)
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        return randomUrlSafe(entropyBytes)
     }
 
     /**
@@ -85,8 +83,12 @@ public object Pkce {
      * Not strictly PKCE, but it belongs to the same hop: `state` binds the callback to the
      * request that started it and is the CSRF defence for the authorization code flow. PKCE does
      * not replace it.
+     *
+     * Deliberately *not* built through [generateVerifier]: `state` is not a code verifier and is
+     * not bound by RFC 7636's 43–128 character range, so borrowing that check here only ever
+     * rejected sizes the specification never applied to.
      */
-    public fun generateState(): String = generateVerifier(24)
+    public fun generateState(): String = randomUrlSafe(OPAQUE_VALUE_BYTES)
 
     /**
      * An opaque, single-use `nonce` for OIDC.
@@ -94,7 +96,16 @@ public object Pkce {
      * Bind it to the user agent, and check that the `nonce` claim in the returned ID token
      * matches. Without it an ID token from a different authorization request can be replayed.
      */
-    public fun generateNonce(): String = generateVerifier(24)
+    public fun generateNonce(): String = randomUrlSafe(OPAQUE_VALUE_BYTES)
+
+    /** 192 bits, unpadded base64url — 32 characters. Far past guessing range for a one-shot value. */
+    private const val OPAQUE_VALUE_BYTES: Int = 24
+
+    private fun randomUrlSafe(byteCount: Int): String {
+        val bytes = ByteArray(byteCount)
+        SecureRandom().nextBytes(bytes)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
 }
 
 /**

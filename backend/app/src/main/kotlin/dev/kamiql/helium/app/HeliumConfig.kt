@@ -3,8 +3,10 @@ package dev.kamiql.helium.app
 import dev.kamiql.helium.domain.common.Secret
 import dev.kamiql.helium.domain.credential.PasswordHashParameters
 import dev.kamiql.helium.domain.mfa.MfaPolicy
+import dev.kamiql.helium.domain.mfa.WebAuthnRelyingParty
 import dev.kamiql.helium.domain.policy.Lifetimes
 import org.slf4j.LoggerFactory
+import java.net.URI
 import java.time.Duration
 
 /**
@@ -70,6 +72,7 @@ data class HeliumConfig(
 
     val lifetimes: Lifetimes,
     val mfaPolicy: MfaPolicy,
+    val webAuthn: WebAuthnRelyingParty,
 
     val mail: MailSettings?,
     val google: ProviderCredentials?,
@@ -149,9 +152,71 @@ data class HeliumConfig(
             problems += "HELIUM_REDIS_URL is required in production for distributed rate limiting"
         }
 
+        problems += webAuthnProblems()
+
         require(problems.isEmpty()) {
             "invalid configuration:\n" + problems.joinToString("\n") { "  - $it" }
         }
+    }
+
+    /**
+     * Checks the relying-party binding that makes passkeys phishing-resistant.
+     *
+     * A passkey is scoped by the browser to [WebAuthnRelyingParty.id] and only released to a page
+     * whose origin matches. Both halves have to agree, and the direction of the error matters:
+     *
+     * An rpId that is too *narrow* merely breaks — the ceremony fails and somebody fixes the
+     * value. An rpId that is too *broad* is an account takeover waiting to happen. `example.com`
+     * for a server whose only origin is `id.example.com` scopes every credential to the parent
+     * domain, so whoever controls *any* sibling — a marketing subdomain, a customer-branded host,
+     * an S3 bucket someone pointed a CNAME at — can run a WebAuthn ceremony that produces
+     * assertions this server accepts. Subdomain takeover then becomes authentication bypass, and
+     * nothing about it looks wrong until it is used.
+     *
+     * So this refuses to start rather than warning: a value nobody can distinguish from correct
+     * at runtime is not a value to leave to review.
+     */
+    private fun webAuthnProblems(): List<String> {
+        val problems = mutableListOf<String>()
+        val rpId = webAuthn.id.lowercase()
+
+        if (rpId.contains("://") || rpId.contains('/') || rpId.contains(':')) {
+            problems += "HELIUM_WEBAUTHN_RP_ID must be a bare host such as id.example.com, not a URL (got '${webAuthn.id}')"
+            // Every origin check below compares against a host, so there is nothing useful to
+            // say about the origins until this is fixed.
+            return problems
+        }
+
+        webAuthn.origins.forEach { origin ->
+            val uri = runCatching { URI(origin) }.getOrNull()
+            val scheme = uri?.scheme?.lowercase()
+            val host = uri?.host?.lowercase()
+
+            if (scheme == null || host.isNullOrEmpty()) {
+                problems += "HELIUM_WEBAUTHN_ORIGINS entry '$origin' is not an absolute URL with an explicit scheme and host"
+                return@forEach
+            }
+            if (!uri.path.isNullOrEmpty() || uri.query != null || uri.fragment != null) {
+                // A browser reports a bare origin, so anything with a path can never match.
+                problems += "HELIUM_WEBAUTHN_ORIGINS entry '$origin' must be a bare origin — scheme, host and optional port, no path"
+            }
+
+            val loopback = host == "localhost" || host == "127.0.0.1" || host == "[::1]"
+            if (scheme != "https" && !loopback) {
+                // Only loopback is a secure context without TLS; anywhere else a plaintext origin
+                // means the ceremony is running over a channel an attacker can rewrite.
+                problems += "HELIUM_WEBAUTHN_ORIGINS entry '$origin' must use https; plaintext is only accepted for localhost and 127.0.0.1"
+            }
+            if (loopback && environment.isProduction) {
+                problems += "HELIUM_WEBAUTHN_ORIGINS entry '$origin' is a development value and must not be set in production"
+            }
+            if (host != rpId && !host.endsWith(".$rpId")) {
+                problems += "HELIUM_WEBAUTHN_ORIGINS entry '$origin' is not covered by HELIUM_WEBAUTHN_RP_ID '$rpId'; " +
+                    "the rp id must equal the origin host or be a parent of it"
+            }
+        }
+
+        return problems
     }
 
     companion object {
@@ -183,9 +248,32 @@ data class HeliumConfig(
             fun number(name: String, default: Int, vararg aliases: String): Int =
                 value(name, *aliases)?.toIntOrNull() ?: default
 
+            fun originSet(name: String): Set<String>? =
+                value(name)?.split(',')?.map { it.trim().trimEnd('/') }?.filter { it.isNotEmpty() }?.toSet()
+
             val environment = HeliumEnvironment.parse(value("HELIUM_ENV"))
             val issuerUrl = value("HELIUM_ISSUER_URL") ?: "http://localhost:90"
             val secureCookies = flag("HELIUM_SECURE_COOKIES", environment.isProduction)
+            val allowedOrigins = originSet("HELIUM_ALLOWED_ORIGINS") ?: setOf(issuerUrl.trimEnd('/'))
+
+            /**
+             * The relying party passkeys are bound to.
+             *
+             * The defaults are the narrowest values that can be inferred rather than the ones
+             * most likely to work: the rp id falls back to the issuer's own host, never to its
+             * parent domain. Where the SPA is served from a different host than the issuer — the
+             * common case — the two disagree and [validate] refuses to start, which is the right
+             * outcome. Guessing a registrable parent so the ceremony "just works" would be
+             * guessing at the one value that decides who can mint assertions for this server.
+             */
+            val webAuthn = WebAuthnRelyingParty(
+                id = value("HELIUM_WEBAUTHN_RP_ID")
+                    ?: runCatching { URI(issuerUrl).host }.getOrNull()
+                    ?: "localhost",
+                name = value("HELIUM_WEBAUTHN_RP_NAME") ?: "HeliumID",
+                origins = (originSet("HELIUM_WEBAUTHN_ORIGINS") ?: allowedOrigins)
+                    .ifEmpty { setOf(issuerUrl.trimEnd('/')) },
+            )
 
             val bootstrapAdmin = if (!environment.isProduction) {
                 val username = value("HELIUM_BOOTSTRAP_ADMIN_USERNAME")
@@ -238,9 +326,7 @@ data class HeliumConfig(
                 bindHost = value("HELIUM_HTTP_HOST") ?: "0.0.0.0",
                 issuerUrl = issuerUrl.trimEnd('/'),
                 publicBaseUrl = (value("HELIUM_PUBLIC_BASE_URL") ?: issuerUrl).trimEnd('/'),
-                allowedOrigins = value("HELIUM_ALLOWED_ORIGINS")
-                    ?.split(',')?.map { it.trim().trimEnd('/') }?.filter { it.isNotEmpty() }?.toSet()
-                    ?: setOf(issuerUrl.trimEnd('/')),
+                allowedOrigins = allowedOrigins,
                 secureCookies = secureCookies,
                 sameSite = value("HELIUM_COOKIE_SAMESITE", "HELIUM_SAME_SITE") ?: "Lax",
                 trustForwardedHeaders = flag("HELIUM_TRUST_FORWARDED_HEADERS", false),
@@ -284,10 +370,14 @@ data class HeliumConfig(
                     sessionAbsolute = Duration.ofDays(number("HELIUM_SESSION_ABSOLUTE_DAYS", 7).toLong()),
                     refreshTokenInactivity = Duration.ofDays(number("HELIUM_REFRESH_IDLE_DAYS", 30).toLong()),
                     refreshTokenAbsolute = Duration.ofDays(number("HELIUM_REFRESH_ABSOLUTE_DAYS", 90).toLong()),
+                    // 0 switches trusted devices off: no cookie is minted and any already in the
+                    // wild stops being honoured, which is the kill switch for the feature.
+                    trustedDevice = Duration.ofDays(number("HELIUM_TRUSTED_DEVICE_DAYS", 30).toLong()),
                 ),
                 mfaPolicy = MfaPolicy.entries
                     .firstOrNull { it.name.equals(value("HELIUM_MFA_POLICY"), ignoreCase = true) }
                     ?: MfaPolicy.OPTIONAL,
+                webAuthn = webAuthn,
 
                 mail = mail,
                 google = providerCredentials("GOOGLE"),

@@ -5,6 +5,8 @@ import dev.kamiql.helium.domain.common.UserId
 import dev.kamiql.helium.domain.mfa.MfaResponse
 import dev.kamiql.helium.domain.mfa.MfaType
 import dev.kamiql.helium.domain.mfa.MfaVerificationResult
+import dev.kamiql.helium.domain.mfa.WebAuthnAuthenticationOptions
+import dev.kamiql.helium.domain.mfa.WebAuthnRegistrationOptions
 import java.time.Instant
 
 /**
@@ -31,6 +33,19 @@ interface MfaMethod {
     /** Proves the user can produce a valid response, and activates the factor. */
     suspend fun confirmEnrollment(factorId: MfaFactorId, response: MfaResponse, now: Instant): Boolean
 
+    /**
+     * Issues the server-chosen nonce this method's [verify] will expect.
+     *
+     * `null` for methods whose response is a value the user reads off a screen or a printed
+     * sheet — there is nothing for the server to choose, so there is nothing to hand out.
+     * WebAuthn overrides it: an assertion is a signature *over* a challenge, and a challenge
+     * the client picked would prove nothing.
+     *
+     * Implementations must store the challenge for exactly one redemption and scope it to
+     * [userId], so an assertion collected for one account cannot be replayed against another.
+     */
+    suspend fun beginVerification(userId: UserId, now: Instant): VerificationChallenge? = null
+
     /** Verifies a challenge response during login or step-up. */
     suspend fun verify(userId: UserId, response: MfaResponse, now: Instant): MfaVerificationResult
 
@@ -39,15 +54,54 @@ interface MfaMethod {
 }
 
 /**
- * @param secret displayed once, for manual entry.
- * @param provisioningUri `otpauth://` URI the client renders as a QR code.
+ * What the client needs in order to complete enrollment.
+ *
+ * Sealed because the shapes have nothing in common beyond the factor they belong to: TOTP
+ * hands over a shared secret, WebAuthn hands over creation options and keeps every secret on
+ * the authenticator. A single record carrying both sets of fields would leave half of them
+ * meaningless — and nullable — in either case.
  */
-data class EnrollmentChallenge(
-    val factorId: MfaFactorId,
-    val type: MfaType,
-    val secret: String,
-    val provisioningUri: String,
-)
+sealed interface EnrollmentChallenge {
+
+    val factorId: MfaFactorId
+    val type: MfaType
+
+    /**
+     * @param secret displayed once, for manual entry.
+     * @param provisioningUri `otpauth://` URI the client renders as a QR code.
+     */
+    data class Totp(
+        override val factorId: MfaFactorId,
+        val secret: String,
+        val provisioningUri: String,
+    ) : EnrollmentChallenge {
+        override val type: MfaType get() = MfaType.TOTP
+    }
+
+    /** Creation options for `navigator.credentials.create()`. Carries no secret. */
+    data class WebAuthn(
+        override val factorId: MfaFactorId,
+        val options: WebAuthnRegistrationOptions,
+    ) : EnrollmentChallenge {
+        override val type: MfaType get() = MfaType.WEBAUTHN
+    }
+}
+
+/**
+ * A nonce the client must sign, issued between login and [MfaMethod.verify].
+ *
+ * Only WebAuthn needs one today; the type is sealed so a future method that also signs a
+ * challenge extends it rather than reusing this one's fields for something else.
+ */
+sealed interface VerificationChallenge {
+
+    val type: MfaType
+
+    /** Request options for `navigator.credentials.get()`. */
+    data class WebAuthn(val options: WebAuthnAuthenticationOptions) : VerificationChallenge {
+        override val type: MfaType get() = MfaType.WEBAUTHN
+    }
+}
 
 /**
  * Registry of the configured methods.

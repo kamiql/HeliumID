@@ -72,7 +72,8 @@ class RecoveryCodeMfaMethod(
      * presented twice concurrently succeeds at most once.
      */
     override suspend fun verify(userId: UserId, response: MfaResponse, now: Instant): MfaVerificationResult {
-        val normalized = normalize(response.code.reveal())
+        val typed = (response as? MfaResponse.Code) ?: return MfaVerificationResult.Rejected
+        val normalized = normalize(typed.value.reveal())
         if (normalized.isEmpty()) return MfaVerificationResult.Rejected
 
         val consumed = mfaRepository.consumeRecoveryCode(userId, tokenHasher.hash(normalized), now)

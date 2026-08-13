@@ -75,7 +75,7 @@ object PostgresFixture {
                         oauth_client_scopes, oauth_redirect_uris, oauth_clients,
                         signing_keys,
                         recovery_codes, totp_factors, mfa_factors, webauthn_credentials,
-                        verification_tokens, sessions, external_identities,
+                        verification_tokens, sessions, trusted_devices, external_identities,
                         password_credentials, user_roles, users
                     RESTART IDENTITY CASCADE
                     """.trimIndent(),

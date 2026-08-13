@@ -3,6 +3,8 @@ import type {
     AcceptedResponse,
     EmailRequest,
     LoginRequest,
+    MfaChallengeRequest,
+    MfaChallengeResponse,
     MfaVerifyRequest,
     PasswordRequirements,
     PasswordResetCompleteRequest,
@@ -34,6 +36,15 @@ export const authApi = {
 
     /** `204` on success; rejects with `mfa_required` when a second factor is needed. */
     login: (request: LoginRequest) => api.post<void>("/v1/auth/login", request),
+
+    /**
+     * Draws the challenge material for one method of a pending transaction.
+     *
+     * Only `webauthn` needs it — a TOTP or recovery code is something the user already has —
+     * and the challenge it returns is single-use, so a failed assertion needs a fresh one.
+     */
+    mfaChallenge: (request: MfaChallengeRequest) =>
+        api.post<MfaChallengeResponse>("/v1/auth/mfa/challenge", request),
 
     verifyMfa: (request: MfaVerifyRequest) => api.post<void>("/v1/auth/mfa/verify", request),
 

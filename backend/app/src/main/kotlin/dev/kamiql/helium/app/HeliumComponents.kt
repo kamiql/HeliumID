@@ -5,6 +5,7 @@ import dev.kamiql.helium.api.AuditRecordResponse
 import dev.kamiql.helium.api.HeliumApiDependencies
 import dev.kamiql.helium.api.HttpSecurityConfig
 import dev.kamiql.helium.api.PrincipalResolver
+import dev.kamiql.helium.audit.ScrubbedAuditPort
 import dev.kamiql.helium.crypto.AesGcmSecretCipher
 import dev.kamiql.helium.crypto.Argon2idPasswordHasher
 import dev.kamiql.helium.crypto.HmacTokenHasher
@@ -24,6 +25,7 @@ import dev.kamiql.helium.identity.MfaFlows
 import dev.kamiql.helium.identity.PasswordPolicyService
 import dev.kamiql.helium.identity.ProviderFlows
 import dev.kamiql.helium.identity.SessionService
+import dev.kamiql.helium.identity.TrustedDeviceService
 import dev.kamiql.helium.identity.VerificationTokenService
 import dev.kamiql.helium.jobs.LoggingMailSender
 import dev.kamiql.helium.jobs.MailConfig
@@ -34,6 +36,7 @@ import dev.kamiql.helium.jobs.SigningKeyRotation
 import dev.kamiql.helium.jobs.SmtpMailSender
 import dev.kamiql.helium.mfa.RecoveryCodeMfaMethod
 import dev.kamiql.helium.mfa.TotpMfaMethod
+import dev.kamiql.helium.mfa.webauthn.WebAuthnMfaMethod
 import dev.kamiql.helium.oauth.ClientAdminFlows
 import dev.kamiql.helium.oauth.OAuthFlows
 import dev.kamiql.helium.oauth.SigningKeyService
@@ -56,9 +59,11 @@ import dev.kamiql.helium.persistence.repository.RefreshTokenRepositoryImpl
 import dev.kamiql.helium.persistence.repository.RevokedTokenRepositoryImpl
 import dev.kamiql.helium.persistence.repository.RoleRepositoryImpl
 import dev.kamiql.helium.persistence.repository.SessionRepositoryImpl
+import dev.kamiql.helium.persistence.repository.TrustedDeviceRepositoryImpl
 import dev.kamiql.helium.persistence.repository.SigningKeyRepositoryImpl
 import dev.kamiql.helium.persistence.repository.UserRepositoryImpl
 import dev.kamiql.helium.persistence.repository.VerificationTokenRepositoryImpl
+import dev.kamiql.helium.persistence.repository.WebAuthnCredentialRepositoryImpl
 import dev.kamiql.helium.provider.oidc.discordProvider
 import dev.kamiql.helium.provider.oidc.gitHubProvider
 import dev.kamiql.helium.provider.oidc.OidcIdentityProvider
@@ -141,8 +146,10 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
     val credentials = PasswordCredentialRepositoryImpl(db)
     val roles = RoleRepositoryImpl(db)
     val sessions = SessionRepositoryImpl(db)
+    val trustedDeviceRepository = TrustedDeviceRepositoryImpl(db)
     val identities = ExternalIdentityRepositoryImpl(db)
     val mfaRepository = MfaRepositoryImpl(db)
+    val webAuthnCredentials = WebAuthnCredentialRepositoryImpl(db)
     val verificationTokens = VerificationTokenRepositoryImpl(db)
     val refreshTokens = RefreshTokenRepositoryImpl(db)
     val authorizationCodes = AuthorizationCodeRepositoryImpl(db)
@@ -183,11 +190,26 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
     val flowRunner = FlowRunner(
         transactionManager = transactionManager,
         outbox = outboxRepository,
-        audit = auditRepository,
+        // Wrapped, not used directly. Audit metadata is assembled from flow state, so what reaches
+        // the permanent table depends on every call site remembering to mark a key sensitive. The
+        // decorator is the backstop for the one that forgets: WebAuthn pushes credential ids,
+        // public keys, challenges and signatures through flow state as ordinary strings.
+        audit = ScrubbedAuditPort(auditRepository),
         metrics = MetricsPort.NoOp,
     )
 
     val sessionService = SessionService(sessions, random, tokenHasher, config.lifetimes)
+
+    val trustedDeviceService = TrustedDeviceService(
+        devices = trustedDeviceRepository,
+        random = random,
+        tokenHasher = tokenHasher,
+        lifetimes = config.lifetimes,
+        // Reuse detection has to survive the challenge that unwinds the login transaction, so
+        // the service needs its own transaction and its own path to the outbox.
+        transactionManager = transactionManager,
+        outbox = outboxRepository,
+    )
 
     private val verificationTokenService =
         VerificationTokenService(verificationTokens, random, tokenHasher, config.lifetimes)
@@ -215,7 +237,24 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
 
     private val recoveryCodeMethod = RecoveryCodeMfaMethod(mfaRepository, tokenHasher, random)
 
-    private val mfaMethods = MfaMethodRegistry(listOf(totpMethod, recoveryCodeMethod))
+    /**
+     * Passkeys as a second factor.
+     *
+     * The relying party comes from configuration and nowhere else: origin and RP-ID binding is the
+     * entire phishing-resistance property, so a value derived from a request header would hand an
+     * attacker the ability to name their own origin. [HeliumConfig.validate] refuses to start if
+     * an origin does not sit under the RP ID.
+     */
+    private val webAuthnMethod = WebAuthnMfaMethod(
+        mfaRepository = mfaRepository,
+        credentials = webAuthnCredentials,
+        users = users,
+        transactions = transactionStore,
+        random = random,
+        relyingParty = config.webAuthn,
+    )
+
+    private val mfaMethods = MfaMethodRegistry(listOf(totpMethod, recoveryCodeMethod, webAuthnMethod))
 
     // --- external providers ---------------------------------------------------------
 
@@ -286,6 +325,7 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         passwordHasher = passwordHasher,
         passwordPolicy = passwordPolicyService,
         sessionService = sessionService,
+        trustedDevices = trustedDeviceService,
         verificationTokens = verificationTokenService,
         transactions = transactionStore,
         mfaMethods = mfaMethods,
@@ -303,10 +343,13 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         mfaMethods = mfaMethods,
         recoveryCodes = recoveryCodeMethod,
         passwordHasher = passwordHasher,
+        rateLimiter = rateLimiter,
+        trustedDevices = trustedDeviceService,
         lifetimes = config.lifetimes,
     )
 
-    val adminFlows = AdminFlows(users, roles, sessions, refreshTokens, config.lifetimes)
+    val adminFlows =
+        AdminFlows(users, roles, sessions, refreshTokens, trustedDeviceService, config.lifetimes)
 
     val providerFlows = ProviderFlows(
         users = users,
@@ -419,6 +462,7 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         identities = identities,
         mfaRepository = mfaRepository,
         authorizationCodes = authorizationCodes,
+        trustedDevices = trustedDeviceService,
         tokenIssuer = tokenIssuer,
         signingKeys = signingKeys,
         passwordPolicy = passwordPolicyService,
@@ -450,6 +494,7 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
     val maintenanceJobs = MaintenanceJobs(
         clock = clock,
         sessions = sessions,
+        trustedDevices = trustedDeviceRepository,
         verificationTokens = verificationTokens,
         authorizationCodes = authorizationCodes,
         refreshTokens = refreshTokens,

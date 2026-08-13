@@ -254,4 +254,33 @@ class PkceTest {
         assertEquals("S256", pair.method)
         assertTrue(!pair.toString().contains(pair.verifier))
     }
+
+    /**
+     * Regression, and the reason these two now have their own cases.
+     *
+     * Both delegated to `generateVerifier(24)`, whose `32..96` guard made the call throw
+     * unconditionally — neither could ever return a value. Everything above passed throughout,
+     * because nothing here had ever called them. They are not incidental helpers: HeliumID
+     * accepts an authorization request with no `state` and no `nonce` and never checks either, so
+     * these are the only defence a relying party has against callback CSRF and ID-token replay.
+     */
+    @Test
+    fun `state and nonce are produced rather than thrown`() {
+        val state = Pkce.generateState()
+        val nonce = Pkce.generateNonce()
+
+        // 24 bytes of entropy as unpadded base64url. Not a code verifier, so RFC 7636's 43..128
+        // range never applied to them.
+        assertEquals(32, state.length, "state was '$state'")
+        assertEquals(32, nonce.length, "nonce was '$nonce'")
+        assertTrue(state.all { it.isLetterOrDigit() || it in "-._~" }, state)
+        assertTrue(nonce.all { it.isLetterOrDigit() || it in "-._~" }, nonce)
+    }
+
+    @Test
+    fun `state and nonce are not repeated`() {
+        val values = List(100) { Pkce.generateState() } + List(100) { Pkce.generateNonce() }
+
+        assertEquals(200, values.toSet().size)
+    }
 }

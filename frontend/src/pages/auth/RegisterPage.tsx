@@ -1,24 +1,27 @@
 import {
     Alert,
-    Avatar,
     Box,
     Button,
-    Container,
     Link as MuiLink,
-    Paper,
+    Stack,
+    Step,
+    StepLabel,
+    Stepper,
     TextField,
     Typography,
 } from "@mui/material"
-import PersonAddOutlinedIcon from "@mui/icons-material/PersonAddOutlined"
 import MarkEmailReadOutlinedIcon from "@mui/icons-material/MarkEmailReadOutlined"
 import { useState } from "react"
 import { Link } from "react-router"
+import AuthCard from "../../components/auth/AuthCard.tsx"
 import EmailField from "../../components/EmailField.tsx"
 import PasswordField from "../../components/PasswordField.tsx"
 import ErrorAlert from "../../components/ErrorAlert.tsx"
 import { useAuth } from "../../hooks/useAuth.ts"
 import { describeFieldError, toHeliumError } from "../../api/problem.ts"
 import { evaluatePassword, usePasswordRequirements } from "../../hooks/usePasswordRequirements.ts"
+
+const STEPS = ["Your details", "Sign-in credentials"]
 
 export default function RegisterPage() {
     const { register, loading } = useAuth()
@@ -68,255 +71,227 @@ export default function RegisterPage() {
 
     if (submitted) {
         return (
-            <Container component="main" maxWidth="xs">
-                <Paper
-                    elevation={8}
-                    sx={{ p: 4, width: "100%", borderRadius: 3, backgroundColor: "background.paper" }}
-                >
-                    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                        <Avatar sx={{ mb: 2, bgcolor: "success.main" }}>
-                            <MarkEmailReadOutlinedIcon />
-                        </Avatar>
+            <AuthCard
+                statusIcon={<MarkEmailReadOutlinedIcon />}
+                statusTone="success"
+                title="Check your inbox"
+            >
+                <Stack spacing={3}>
+                    <Typography sx={{ color: "text.secondary", textAlign: "center" }}>
+                        If that address can be registered, we have sent a verification link to{" "}
+                        <Box component="strong" sx={{ wordBreak: "break-word" }}>
+                            {email}
+                        </Box>
+                        . Open it to finish setting up your account.
+                    </Typography>
 
-                        <Typography
-                            component="h1"
-                            variant="h4"
-                            sx={{ fontFamily: "Silkscreen", mb: 3, textAlign: "center" }}
-                        >
-                            Check your inbox
-                        </Typography>
+                    <Typography variant="body2" sx={{ color: "text.secondary", textAlign: "center" }}>
+                        Nothing after a few minutes? Check your spam folder, then request a new
+                        link from the sign-in page.
+                    </Typography>
 
-                        <Typography sx={{ color: "text.secondary", textAlign: "center", mb: 3 }}>
-                            If that address can be registered, we have sent a verification link to{" "}
-                            <strong>{email}</strong>. Open it to finish setting up your account.
-                        </Typography>
-
-                        <Button component={Link} to="/login" fullWidth variant="contained">
-                            Back to sign in
-                        </Button>
-                    </Box>
-                </Paper>
-            </Container>
+                    <Button component={Link} to="/login" fullWidth variant="contained">
+                        Back to sign in
+                    </Button>
+                </Stack>
+            </AuthCard>
         )
     }
 
+    // Both guards reject the form locally, before any request. An error raised while those
+    // fields are incomplete is the local one and belongs on the fields, not in a banner.
+    const detailsIncomplete = error !== null && !username
+    const credentialsIncomplete =
+        error !== null && (!email || !password || password !== passwordConfirm)
+
     return (
-        <Container component="main" maxWidth="xs">
-            <Paper
-                elevation={8}
-                sx={{
-                    p: 4,
-                    width: "100%",
-                    borderRadius: 3,
-                    backgroundColor: "background.paper",
+        <AuthCard
+            title="Create your account"
+            subtitle="Two short steps — details first, then how you sign in."
+            footer={
+                <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    Already have an account?{" "}
+                    <MuiLink component={Link} to="/login">
+                        Sign in
+                    </MuiLink>
+                </Typography>
+            }
+        >
+            <Stepper activeStep={step - 1} sx={{ mb: 3 }}>
+                {STEPS.map((label) => (
+                    <Step key={label}>
+                        <StepLabel>{label}</StepLabel>
+                    </Step>
+                ))}
+            </Stepper>
+
+            <Box
+                component="form"
+                onSubmit={(event) => {
+                    event.preventDefault()
+                    if (step === 2) void handleRegister()
                 }}
             >
-                <Box
-                    sx={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                    }}
-                >
-                    <Avatar
-                        sx={{
-                            mb: 2,
-                            bgcolor: "primary.main",
-                        }}
-                    >
-                        <PersonAddOutlinedIcon />
-                    </Avatar>
+                {step === 1 && (
+                    <Stack spacing={2}>
+                        <TextField
+                            required
+                            fullWidth
+                            label="Username"
+                            autoComplete="username"
+                            autoFocus
+                            value={username}
+                            onChange={(event) => {
+                                setUsername(event.target.value)
+                                clearErrors()
+                            }}
+                            error={Boolean(fieldErrors.username) || detailsIncomplete}
+                            helperText={
+                                fieldErrors.username
+                                    ? describeFieldError(fieldErrors.username)
+                                    : detailsIncomplete
+                                      ? "Choose a username."
+                                      : undefined
+                            }
+                        />
 
-                    <Typography
-                        component="h1"
-                        variant="h4"
-                        sx={{
-                            fontFamily: "Silkscreen",
-                            mb: 3,
-                        }}
-                    >
-                        Sign up
-                    </Typography>
+                        <TextField
+                            fullWidth
+                            label="First name"
+                            autoComplete="given-name"
+                            value={firstName}
+                            onChange={(event) => {
+                                setFirstName(event.target.value)
+                                clearErrors()
+                            }}
+                            error={Boolean(fieldErrors.firstName)}
+                            helperText={
+                                fieldErrors.firstName
+                                    ? describeFieldError(fieldErrors.firstName)
+                                    : undefined
+                            }
+                        />
 
-                    <Box
-                        component="form"
-                        sx={{ width: "100%" }}
-                        onSubmit={(event) => {
-                            event.preventDefault()
-                            if (step === 2) void handleRegister()
-                        }}
-                    >
-                        {step === 1 && (
-                            <>
-                                <TextField
-                                    margin="normal"
-                                    required
-                                    fullWidth
-                                    label="Username"
-                                    autoComplete="username"
-                                    autoFocus
-                                    value={username}
-                                    onChange={(event) => {
-                                        setUsername(event.target.value)
-                                        clearErrors()
-                                    }}
-                                    error={Boolean(fieldErrors.username)}
-                                    helperText={
-                                        fieldErrors.username
-                                            ? describeFieldError(fieldErrors.username)
-                                            : undefined
-                                    }
-                                />
+                        <TextField
+                            fullWidth
+                            label="Last name"
+                            autoComplete="family-name"
+                            value={lastName}
+                            onChange={(event) => {
+                                setLastName(event.target.value)
+                                clearErrors()
+                            }}
+                        />
 
-                                <TextField
-                                    margin="normal"
-                                    fullWidth
-                                    label="First name"
-                                    autoComplete="given-name"
-                                    value={firstName}
-                                    onChange={(event) => {
-                                        setFirstName(event.target.value)
-                                        clearErrors()
-                                    }}
-                                />
+                        {error !== null && !detailsIncomplete && <ErrorAlert error={error} />}
 
-                                <TextField
-                                    margin="normal"
-                                    fullWidth
-                                    label="Last name"
-                                    autoComplete="family-name"
-                                    value={lastName}
-                                    onChange={(event) => {
-                                        setLastName(event.target.value)
-                                        clearErrors()
-                                    }}
-                                />
+                        <Button
+                            fullWidth
+                            variant="contained"
+                            onClick={() => {
+                                if (!username) {
+                                    setError(new Error("incomplete"))
+                                    return
+                                }
+                                clearErrors()
+                                setStep(2)
+                            }}
+                        >
+                            Continue
+                        </Button>
+                    </Stack>
+                )}
 
-                                {error !== null && <ErrorAlert error={error} sx={{ mt: 2 }} />}
+                {step === 2 && (
+                    <Stack spacing={2}>
+                        <EmailField
+                            required
+                            fullWidth
+                            label="Email"
+                            autoComplete="email"
+                            autoFocus
+                            value={email}
+                            onType={(value) => {
+                                setEmail(value)
+                                clearErrors()
+                            }}
+                            error={Boolean(fieldErrors.email) || (credentialsIncomplete && !email)}
+                            helperText={
+                                fieldErrors.email
+                                    ? describeFieldError(fieldErrors.email)
+                                    : credentialsIncomplete && !email
+                                      ? "Enter the address we should verify."
+                                      : undefined
+                            }
+                        />
 
-                                <Button
-                                    fullWidth
-                                    variant="contained"
-                                    onClick={() => {
-                                        if (!username) {
-                                            setError(new Error("incomplete"))
-                                            return
-                                        }
-                                        clearErrors()
-                                        setStep(2)
-                                    }}
-                                    sx={{
-                                        mt: 2,
-                                        py: 1.2,
-                                    }}
-                                >
-                                    Continue
-                                </Button>
-                            </>
+                        <PasswordField
+                            required
+                            fullWidth
+                            label="Password"
+                            autoComplete="new-password"
+                            value={password}
+                            onType={(value) => {
+                                setPassword(value)
+                                clearErrors()
+                            }}
+                            validate
+                            identifiers={[username, email]}
+                            error={Boolean(fieldErrors.password)}
+                        />
+
+                        {/* A server-side reason the checklist cannot derive, e.g. a breach hit. */}
+                        {fieldErrors.password && (
+                            <Alert severity="error">
+                                {describeFieldError(fieldErrors.password)}
+                            </Alert>
                         )}
 
-                        {step === 2 && (
-                            <>
-                                <EmailField
-                                    margin="normal"
-                                    required
-                                    fullWidth
-                                    label="Email"
-                                    autoComplete="email"
-                                    autoFocus
-                                    value={email}
-                                    onType={(value) => {
-                                        setEmail(value)
-                                        clearErrors()
-                                    }}
-                                    error={Boolean(fieldErrors.email)}
-                                    helperText={
-                                        fieldErrors.email
-                                            ? describeFieldError(fieldErrors.email)
-                                            : undefined
-                                    }
-                                />
+                        <PasswordField
+                            required
+                            fullWidth
+                            label="Confirm password"
+                            autoComplete="new-password"
+                            value={passwordConfirm}
+                            onType={(value) => {
+                                setPasswordConfirm(value)
+                                clearErrors()
+                            }}
+                            matches={password}
+                            validate
+                        />
 
-                                <PasswordField
-                                    margin="normal"
-                                    required
-                                    fullWidth
-                                    label="Password"
-                                    autoComplete="new-password"
-                                    value={password}
-                                    onType={(value) => {
-                                        setPassword(value)
-                                        clearErrors()
-                                    }}
-                                    validate
-                                    identifiers={[username, email]}
-                                    error={Boolean(fieldErrors.password)}
-                                />
-
-                                {fieldErrors.password && (
-                                    <Alert severity="error" sx={{ mt: 1 }}>
-                                        {describeFieldError(fieldErrors.password)}
-                                    </Alert>
-                                )}
-
-                                <PasswordField
-                                    margin="normal"
-                                    required
-                                    fullWidth
-                                    label="Confirm password"
-                                    autoComplete="new-password"
-                                    value={passwordConfirm}
-                                    onType={(value) => {
-                                        setPasswordConfirm(value)
-                                        clearErrors()
-                                    }}
-                                    matches={password}
-                                    validate
-                                />
-
-                                {error !== null && <ErrorAlert error={error} hideFieldErrors sx={{ mt: 2 }} />}
-
-                                <Button
-                                    type="submit"
-                                    fullWidth
-                                    variant="contained"
-                                    disabled={
-                                        loading ||
-                                        !policyMet ||
-                                        password.length === 0 ||
-                                        password !== passwordConfirm
-                                    }
-                                    sx={{
-                                        mt: 2,
-                                        mb: 2,
-                                        py: 1.2,
-                                    }}
-                                >
-                                    Create account
-                                </Button>
-
-                                <Button
-                                    fullWidth
-                                    variant="text"
-                                    onClick={() => {
-                                        clearErrors()
-                                        setStep(1)
-                                    }}
-                                >
-                                    Back
-                                </Button>
-                            </>
+                        {error !== null && !credentialsIncomplete && (
+                            <ErrorAlert error={error} hideFieldErrors />
                         )}
 
-                        <Typography sx={{ textAlign: "center", mt: 2 }}>
-                            Already have an account?{" "}
-                            <MuiLink component={Link} to="/login" variant="body2">
-                                Sign in
-                            </MuiLink>
-                        </Typography>
-                    </Box>
-                </Box>
-            </Paper>
-        </Container>
+                        <Button
+                            type="submit"
+                            fullWidth
+                            variant="contained"
+                            disabled={
+                                loading ||
+                                !policyMet ||
+                                password.length === 0 ||
+                                password !== passwordConfirm
+                            }
+                        >
+                            Create account
+                        </Button>
+
+                        <Button
+                            fullWidth
+                            variant="text"
+                            onClick={() => {
+                                clearErrors()
+                                setStep(1)
+                            }}
+                        >
+                            Back
+                        </Button>
+                    </Stack>
+                )}
+            </Box>
+        </AuthCard>
     )
 }

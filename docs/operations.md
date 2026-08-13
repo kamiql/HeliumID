@@ -235,6 +235,26 @@ hc run --rm backend helium-id admin create --email ops@example.com --username op
 The generated password is printed once, to stdout, and an audit record is written. Change it and
 enrol MFA immediately.
 
+**Trusted-device cookie reuse** (`auth_trusted_device_reuse_detected_total` non-zero, audit event
+`auth.trusted-device-reuse-detected`). A device token rotates on every use and exactly one
+successor is ever issued, so a superseded value reappearing means the cookie was copied off the
+machine — by malware, a backup, or someone with the laptop. The system has already revoked that
+device and notified the owner; the affected login fell back to a full MFA challenge, so the
+attacker did not get in on the strength of the cookie alone.
+
+Less severe than refresh-token reuse — a device token is worthless without the password, whereas a
+refresh token is access on its own — but it is the same class of signal and gets the same response:
+
+1. Confirm with the user whether they still have the device.
+2. If not, or if unsure: revoke their remaining trusted devices and sessions
+   (`DELETE /v1/me/trusted-devices`, or the admin sign-out-everywhere), and have them change the
+   password. The cookie's value implies the machine was accessible; assume the password was too.
+3. Check whether reuse is appearing across many accounts. One user is a stolen laptop; a pattern is
+   an exfiltration campaign against browser cookie stores, which is a much larger incident.
+
+To switch the feature off fleet-wide, set `HELIUM_TRUSTED_DEVICE_DAYS=0` and redeploy: nothing new
+is minted and every cookie already out there stops being honoured. No migration is involved.
+
 **Provider outage.** External IdP failures are contained by timeouts and a circuit breaker; local
 credential login continues to work. Watch `provider_latency_seconds` and
 `oauth_callback_failures_total`.
@@ -256,7 +276,9 @@ network in production.
 | --- | --- | --- |
 | `auth_login_attempts_total` | counter | Baseline for the ratio below |
 | `auth_login_failures_total` | counter | Failure ratio above ~30% sustained → credential stuffing |
-| `auth_mfa_challenges_total` | counter | A sudden drop can mean MFA is being bypassed, not that users stopped using it |
+| `auth_mfa_challenges_total` | counter | A sudden drop can mean MFA is being bypassed, not that users stopped using it. Read it against `auth_trusted_device_skips_total`: a drop matched by a rise there is the trusted-device feature working as designed, a drop *without* one is not |
+| `auth_trusted_device_skips_total` | counter | Logins that skipped the factor on a trusted device. Expected to be non-zero; a step change without a matching change in enrolments deserves a look |
+| `auth_trusted_device_reuse_detected_total` | counter | **Any** non-zero value means a device cookie was copied — see §5 |
 | `auth_refresh_reuse_detected_total` | counter | **Any** non-zero value is an incident — see §4 |
 | `oauth_callback_failures_total` | counter | Provider outage, or a misconfigured redirect URI after a deploy |
 | `password_hash_duration_seconds` | histogram | p50 outside 100–300 ms → re-benchmark Argon2id |

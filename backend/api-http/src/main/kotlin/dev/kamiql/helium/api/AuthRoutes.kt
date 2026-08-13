@@ -6,19 +6,23 @@ import dev.kamiql.helium.domain.error.AuthError
 import dev.kamiql.helium.domain.identity.ProviderKey
 import dev.kamiql.helium.domain.mfa.MfaType
 import dev.kamiql.helium.domain.policy.Principal
+import dev.kamiql.helium.identity.BeginMfaChallengeCommand
 import dev.kamiql.helium.identity.BeginProviderAuthorizationCommand
 import dev.kamiql.helium.identity.CompleteMfaCommand
 import dev.kamiql.helium.identity.CompleteProviderCallbackCommand
 import dev.kamiql.helium.identity.CompletePasswordResetCommand
 import dev.kamiql.helium.identity.LoginCommand
 import dev.kamiql.helium.identity.LogoutCommand
+import dev.kamiql.helium.identity.MfaChallengeStarted
 import dev.kamiql.helium.identity.ProviderCallbackResult
 import dev.kamiql.helium.identity.RegisterCommand
 import dev.kamiql.helium.identity.RequestPasswordResetCommand
 import dev.kamiql.helium.identity.ResendVerificationCommand
+import dev.kamiql.helium.identity.TrustedDeviceDirective
 import dev.kamiql.helium.identity.VerifyEmailCommand
 import dev.kamiql.helium.spi.ProviderIntent
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
@@ -27,6 +31,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import java.time.Duration
+import java.time.Instant
 
 /**
  * `/v1/auth` — first-party authentication.
@@ -105,25 +110,64 @@ fun Route.authRoutes(dependencies: HeliumApiDependencies) = route("/auth") {
 
         val result = dependencies.flowRunner.execute(
             flow = dependencies.identityFlows.login,
-            command = LoginCommand(body.identifier, Secret.of(body.password)),
+            command = LoginCommand(
+                identifier = body.identifier,
+                password = Secret.of(body.password),
+                // Handed over unexamined. Whether this value earns a skipped challenge is the
+                // flow's call; the route cannot even tell a forged cookie from an expired one.
+                trustedDeviceToken = call.request.cookies[dependencies.config.trustedDeviceCookieName].asSecret(),
+            ),
             context = context,
         )
         call.respondFlow(result) { success ->
             call.issueSession(dependencies, success.session)
+            call.applyTrustedDevice(dependencies, success.trustedDevice, context.now)
             call.respond(HttpStatusCode.NoContent)
         }
+    }
+
+    /**
+     * Hands out the nonce the chosen method needs before it can be answered.
+     *
+     * Reads the transaction without consuming it: fetching a challenge must not burn one of the
+     * user's attempts, or a client that renders the passkey prompt twice locks the account out.
+     * Answers for every method, with no options for the ones that have nothing to sign, so the
+     * client follows one path regardless of which factor it is about to use.
+     */
+    post("/mfa/challenge") {
+        if (!call.enforceCsrf(dependencies)) return@post
+        val body = call.receive<MfaChallengeRequest>()
+        val method = parseMfaType(body.method)
+        if (method == null) {
+            call.respondProblem(AuthError.ValidationFailed(mapOf("method" to "unsupported")))
+            return@post
+        }
+        val (_, context) = call.heliumContext(dependencies)
+
+        val result = dependencies.flowRunner.execute(
+            flow = dependencies.identityFlows.beginMfaChallenge,
+            command = BeginMfaChallengeCommand(
+                transactionId = TransactionId(body.transactionId),
+                method = method,
+            ),
+            context = context,
+        )
+        call.respondFlow(result) { started -> call.respond(started.toResponse()) }
     }
 
     /** Completes an MFA challenge started by `/login`. */
     post("/mfa/verify") {
         if (!call.enforceCsrf(dependencies)) return@post
         val body = call.receive<MfaVerifyRequest>()
-        val method = when (body.method.lowercase()) {
-            "totp" -> MfaType.TOTP
-            "recovery_code" -> MfaType.RECOVERY_CODE
-            "webauthn" -> MfaType.WEBAUTHN
-            else -> {
-                call.respondProblem(AuthError.ValidationFailed(mapOf("method" to "unsupported")))
+        val method = parseMfaType(body.method)
+        if (method == null) {
+            call.respondProblem(AuthError.ValidationFailed(mapOf("method" to "unsupported")))
+            return@post
+        }
+        val response = when (val read = body.readResponse(method)) {
+            is MfaResponseResult.Valid -> read.response
+            is MfaResponseResult.Invalid -> {
+                call.respondProblem(AuthError.ValidationFailed(mapOf("response" to read.reason)))
                 return@post
             }
         }
@@ -134,12 +178,14 @@ fun Route.authRoutes(dependencies: HeliumApiDependencies) = route("/auth") {
             command = CompleteMfaCommand(
                 transactionId = TransactionId(body.transactionId),
                 method = method,
-                code = Secret.of(body.code),
+                response = response,
+                rememberDevice = body.rememberDevice,
             ),
             context = context,
         )
         call.respondFlow(result) { success ->
             call.issueSession(dependencies, success.session)
+            call.applyTrustedDevice(dependencies, success.trustedDevice, context.now)
             call.respond(HttpStatusCode.NoContent)
         }
     }
@@ -309,6 +355,33 @@ fun Route.authRoutes(dependencies: HeliumApiDependencies) = route("/auth") {
     }
 }
 
+/**
+ * Wire token to [MfaType].
+ *
+ * Derived from [MfaType.token] rather than spelled out, so the same string the server emits in
+ * an `mfa_required` problem is the one it accepts back — a hand-written `when` is one rename
+ * away from advertising a method the parser rejects.
+ *
+ * `null` for an unknown value: whether that is a 404 or a validation problem is the caller's
+ * decision, not this function's.
+ */
+internal fun parseMfaType(raw: String): MfaType? {
+    val token = raw.lowercase()
+    return MfaType.entries.firstOrNull { it.token == token }
+}
+
+/**
+ * Renders a started challenge.
+ *
+ * `webauthn` is absent for a method with nothing to sign, rather than an empty object: a client
+ * that finds options present knows it must run the authenticator ceremony, and one that does not
+ * knows to prompt for a typed value. An empty object would make that a field-by-field guess.
+ */
+internal fun MfaChallengeStarted.toResponse(): MfaChallengeResponse = MfaChallengeResponse(
+    method = method.token,
+    webauthn = webauthnOptions?.toResponse(),
+)
+
 /** Sets the session cookie and a matching CSRF token after a successful authentication. */
 internal fun io.ktor.server.application.ApplicationCall.issueSession(
     dependencies: HeliumApiDependencies,
@@ -322,4 +395,33 @@ internal fun io.ktor.server.application.ApplicationCall.issueSession(
     // A fresh CSRF token per authentication, so a token captured before sign-in is useless
     // afterwards (session-fixation hygiene for the CSRF pair).
     setCsrfCookie(dependencies.config, newCsrfToken(dependencies.random))
+}
+
+/**
+ * Carries out the flow's trusted-device decision.
+ *
+ * Both authentication entry points end here rather than each reading the directive themselves:
+ * the two paths differ only in how the user proved themselves, and a second copy of this `when`
+ * is a second place for a new directive case to be quietly ignored.
+ *
+ * @param now the instant the flow itself ran on, not a fresh reading. The max-age is the distance
+ *        to an absolute expiry the server already committed to, so measuring it from a later
+ *        clock read would hand the browser a cookie that outlives the record behind it.
+ */
+private fun ApplicationCall.applyTrustedDevice(
+    dependencies: HeliumApiDependencies,
+    directive: TrustedDeviceDirective,
+    now: Instant,
+) {
+    when (directive) {
+        is TrustedDeviceDirective.Issue -> setTrustedDeviceCookie(
+            config = dependencies.config,
+            value = directive.device.cookieValue(),
+            // Floored at zero rather than trusted: a non-positive max-age expresses "already
+            // expired" to the browser, which is the correct reading of an expiry in the past.
+            maxAgeSeconds = Duration.between(now, directive.expiresAt).seconds.coerceAtLeast(0),
+        )
+        TrustedDeviceDirective.Clear -> clearTrustedDeviceCookie(dependencies.config)
+        TrustedDeviceDirective.Keep -> Unit
+    }
 }

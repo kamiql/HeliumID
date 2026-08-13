@@ -1,0 +1,22 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    Produktionsnaher Stack (Caddy, Backend, Worker, Frontend-Assets, Postgres, Redis).
+    Keine veröffentlichten DB-/Redis-Ports, kein Debugger, kein Flyway beim Start.
+
+    Migrationen laufen hier bewusst nicht automatisch — siehe docs/operations.md:
+      docker compose --env-file .env.prod -f docker-compose.prod.yml \
+        run --rm -e HELIUM_MIGRATE_ON_START=true -e HELIUM_ROLE=migrate backend
+
+    Voraussetzung: cp .env.prod.example .env.prod und aus dem Secret-Manager befüllen.
+  -->
+  <configuration default="false" name="Compose Prod" type="docker-deploy" factoryName="docker-compose.yml" server-name="Docker">
+    <deployment type="docker-compose.yml">
+      <settings>
+        <option name="envFilePath" value="$PROJECT_DIR$/.env.prod" />
+        <option name="sourceFilePath" value="docker-compose.prod.yml" />
+        <option name="commandLineOptions" value="--build" />
+      </settings>
+    </deployment>
+    <method v="2" />
+  </configuration>
+</component>

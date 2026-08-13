@@ -5,10 +5,12 @@ import {
     DialogContent,
     DialogTitle,
     Stack,
+    Typography,
 } from "@mui/material"
 import { useState } from "react"
 import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx"
 import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx"
+import { ACCOUNT_ANCHORS } from "../../../../components/dashboard/account/AccountRequirement.tsx"
 import PasswordField from "../../../../components/PasswordField.tsx"
 import ErrorAlert from "../../../../components/ErrorAlert.tsx"
 import { useUser } from "../../../../hooks/useUser.ts"
@@ -81,24 +83,28 @@ export default function PasswordBox() {
                 requirements={[
                     {
                         id: "email",
-                        label: "Email verification required",
+                        label: "Verify your email address first",
+                        hint: "A password change is only safe once we can reach you at a confirmed address.",
+                        fix: { label: "Go to email address", anchor: ACCOUNT_ANCHORS.email },
                         satisfied: user.email_verified,
                     },
                 ]}
-                sx={{
-                    flex: "1 1 300px",
-                    minWidth: "250px",
-                }}
+                actions={
+                    <AccountButton
+                        variant="outlined"
+                        onClick={() => {
+                            reset()
+                            setOpen(true)
+                        }}
+                    >
+                        Change password
+                    </AccountButton>
+                }
             >
-                <AccountButton
-                    variant="outlined"
-                    onClick={() => {
-                        reset()
-                        setOpen(true)
-                    }}
-                >
-                    Change password
-                </AccountButton>
+                <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    You will be asked for your current password, and every other signed-in device
+                    is signed out as soon as the new one is set.
+                </Typography>
             </AccountBox>
 
             <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">

@@ -21,6 +21,7 @@ import dev.kamiql.helium.identity.IdentityFlows
 import dev.kamiql.helium.identity.MfaFlows
 import dev.kamiql.helium.identity.PasswordPolicyService
 import dev.kamiql.helium.identity.ProviderFlows
+import dev.kamiql.helium.identity.TrustedDeviceService
 import dev.kamiql.helium.oauth.ClientAdminFlows
 import dev.kamiql.helium.oauth.OAuthFlows
 import dev.kamiql.helium.oauth.SigningKeyService
@@ -60,6 +61,16 @@ class HeliumApiDependencies(
     val identities: ExternalIdentityRepository,
     val mfaRepository: MfaRepository,
     val authorizationCodes: AuthorizationCodeRepository,
+
+    /**
+     * Read and revoke side of trusted devices.
+     *
+     * A service rather than a flow because listing and forgetting a device carry no requirements
+     * beyond "you are signed in and it is yours", and the second half is enforced by the query
+     * itself. The issuing side stays inside the login and MFA flows, where the assurance decision
+     * belongs.
+     */
+    val trustedDevices: TrustedDeviceService,
 
     val tokenIssuer: TokenIssuer,
     val signingKeys: SigningKeyService,

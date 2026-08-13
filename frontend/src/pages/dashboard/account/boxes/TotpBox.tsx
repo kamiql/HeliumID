@@ -9,10 +9,14 @@ import {
     Stack,
     Typography,
 } from "@mui/material"
+import { CheckCircleOutlined, ShieldOutlined } from "@mui/icons-material"
 import { QRCodeSVG } from "qrcode.react"
 import { useEffect, useState } from "react"
 import AccountBox from "../../../../components/dashboard/account/AccountBox.tsx"
 import AccountButton from "../../../../components/dashboard/account/AccountButton.tsx"
+import { ACCOUNT_ANCHORS } from "../../../../components/dashboard/account/AccountRequirement.tsx"
+import DefinitionList from "../../../../components/ui/DefinitionList.tsx"
+import { ListSkeleton } from "../../../../components/ui/StateView.tsx"
 import OtpInput from "../../../../components/OtpInput.tsx"
 import PasswordField from "../../../../components/PasswordField.tsx"
 import CopyButton from "../../../../components/CopyButton.tsx"
@@ -22,6 +26,8 @@ import { useUser } from "../../../../hooks/useUser.ts"
 import { useAuthStore } from "../../../../stores/auth.store.ts"
 import { accountApi } from "../../../../api/account.ts"
 import { toHeliumError } from "../../../../api/problem.ts"
+import { formatDateTime, formatRelative } from "../../../../lib/format.ts"
+import { MONO_FONT } from "../../../../lib/theme.ts"
 import { notify } from "../../../../stores/notice.store.ts"
 import type { MfaFactor, TotpEnrollment } from "../../../../api/types.ts"
 
@@ -37,6 +43,7 @@ export default function TotpBox() {
     const refresh = useAuthStore((state) => state.refresh)
 
     const [factors, setFactors] = useState<MfaFactor[]>([])
+    const [factorsLoading, setFactorsLoading] = useState(true)
     const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null)
     const [code, setCode] = useState("")
     const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null)
@@ -49,11 +56,15 @@ export default function TotpBox() {
 
     const activeTotp = factors.find((factor) => factor.type === "totp" && factor.status === "ACTIVE")
 
+    // No `setFactorsLoading(true)` here: the flag starts true for the first fetch, and a
+    // refresh after enrolling or disabling should update the detail in place rather than
+    // replace it with a skeleton.
     const loadFactors = () => {
         accountApi
             .factors()
             .then(({ data }) => setFactors(data))
             .catch(() => setFactors([]))
+            .finally(() => setFactorsLoading(false))
     }
 
     useEffect(loadFactors, [])
@@ -125,47 +136,88 @@ export default function TotpBox() {
     return (
         <>
             <AccountBox
+                id={ACCOUNT_ANCHORS.totp}
                 title="Two-factor authentication"
                 description="Protect your account with a time-based code from an authenticator app."
                 requirements={[
                     {
                         id: "email",
-                        label: "Email verification required",
+                        label: "Verify your email address first",
+                        hint: "Two-factor setup relies on an address we can reach if you lose the app.",
+                        fix: { label: "Go to email address", anchor: ACCOUNT_ANCHORS.email },
                         satisfied: user.email_verified || user.mfa_enabled,
                     },
                 ]}
-                sx={{ flex: "1 1 100%" }}
+                banner={
+                    <Chip
+                        size="small"
+                        variant="outlined"
+                        color={user.mfa_enabled ? "success" : "default"}
+                        icon={user.mfa_enabled ? <CheckCircleOutlined /> : <ShieldOutlined />}
+                        label={user.mfa_enabled ? "Enabled" : "Not enabled"}
+                    />
+                }
+                actions={
+                    activeTotp ? (
+                        <AccountButton
+                            variant="outlined"
+                            color="error"
+                            aria-label="Disable two-factor authentication"
+                            onClick={() => {
+                                setError(null)
+                                setPassword("")
+                                setDisableOpen(true)
+                            }}
+                        >
+                            Disable
+                        </AccountButton>
+                    ) : (
+                        <AccountButton
+                            variant="contained"
+                            aria-label="Set up two-factor authentication"
+                            onClick={() => void handleEnroll()}
+                            disabled={loading || factorsLoading}
+                        >
+                            Set up
+                        </AccountButton>
+                    )
+                }
             >
-                <Chip
-                    label={user.mfa_enabled ? "Enabled" : "Not enabled"}
-                    color={user.mfa_enabled ? "success" : "warning"}
-                    variant="outlined"
-                    sx={{ width: "fit-content" }}
-                />
+                <Stack sx={{ gap: 2 }}>
+                    {error !== null && !enrollment && !disableOpen && <ErrorAlert error={error} />}
 
-                {error !== null && !enrollment && !disableOpen && <ErrorAlert error={error} />}
+                    {factorsLoading ? (
+                        <ListSkeleton rows={1} lines={2} />
+                    ) : activeTotp ? (
+                        <>
+                            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                                Signing in asks for a six-digit code from this authenticator, on
+                                top of your password.
+                            </Typography>
 
-                {activeTotp ? (
-                    <AccountButton
-                        variant="outlined"
-                        color="error"
-                        onClick={() => {
-                            setError(null)
-                            setPassword("")
-                            setDisableOpen(true)
-                        }}
-                    >
-                        Disable two-factor authentication
-                    </AccountButton>
-                ) : (
-                    <AccountButton
-                        variant="outlined"
-                        onClick={() => void handleEnroll()}
-                        disabled={loading}
-                    >
-                        Set up two-factor authentication
-                    </AccountButton>
-                )}
+                            <DefinitionList
+                                items={[
+                                    {
+                                        label: "Authenticator",
+                                        value: activeTotp.label || "Authenticator app",
+                                    },
+                                    { label: "Added", value: formatDateTime(activeTotp.created_at) },
+                                    {
+                                        label: "Last used",
+                                        value: activeTotp.last_used_at
+                                            ? formatRelative(activeTotp.last_used_at)
+                                            : "Never used",
+                                    },
+                                ]}
+                            />
+                        </>
+                    ) : (
+                        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                            Nothing but your password protects this account right now. Adding an
+                            authenticator app means a stolen password is not enough on its own.
+                        </Typography>
+                    )}
+                </Stack>
             </AccountBox>
 
             <Dialog
@@ -221,7 +273,7 @@ export default function TotpBox() {
                                     >
                                         <Typography
                                             sx={{
-                                                fontFamily: "monospace",
+                                                fontFamily: MONO_FONT,
                                                 wordBreak: "break-all",
                                                 flex: 1,
                                             }}

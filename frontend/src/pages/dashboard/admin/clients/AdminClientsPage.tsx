@@ -1,9 +1,13 @@
 import {
     Box,
     Button,
-    Card,
     Chip,
+    Divider,
     IconButton,
+    ListItemIcon,
+    ListItemText,
+    Menu,
+    MenuItem,
     Stack,
     Table,
     TableBody,
@@ -15,18 +19,33 @@ import {
     Tooltip,
     Typography,
 } from "@mui/material"
-import { Add, Autorenew, Delete, Edit } from "@mui/icons-material"
+import {
+    Add,
+    Apps,
+    Autorenew,
+    Delete,
+    Edit,
+    MoreVert,
+    ToggleOff,
+    ToggleOn,
+} from "@mui/icons-material"
 import { useCallback, useEffect, useState } from "react"
 import PageHeader from "../../../../components/dashboard/PageHeader.tsx"
 import ErrorAlert from "../../../../components/ErrorAlert.tsx"
 import OneTimeSecretDialog from "../../../../components/OneTimeSecretDialog.tsx"
+import Section from "../../../../components/ui/Section.tsx"
+import { EmptyState, TableSkeleton, TableStateRow } from "../../../../components/ui/StateView.tsx"
 import ClientFormDialog from "./ClientFormDialog.tsx"
 import { adminApi } from "../../../../api/admin.ts"
 import { useConfirm } from "../../../../hooks/useConfirm.ts"
 import { Permissions, usePermissions } from "../../../../hooks/usePermissions.ts"
 import { formatDate } from "../../../../lib/format.ts"
 import { notify } from "../../../../stores/notice.store.ts"
+import { MONO_FONT } from "../../../../lib/theme.ts"
 import type { ClientSecret, OAuthClient } from "../../../../api/types.ts"
+
+/** Columns are hidden with CSS rather than unmounted, so `colSpan` never has to change. */
+const COLUMN_COUNT = 6
 
 export default function AdminClientsPage() {
     const { confirm } = useConfirm()
@@ -38,23 +57,38 @@ export default function AdminClientsPage() {
     const [page, setPage] = useState(0)
     const [rowsPerPage, setRowsPerPage] = useState(25)
     const [error, setError] = useState<unknown>(null)
+    const [loading, setLoading] = useState(true)
 
     const [formOpen, setFormOpen] = useState(false)
     const [editing, setEditing] = useState<OAuthClient | null>(null)
     const [issuedSecret, setIssuedSecret] = useState<ClientSecret | null>(null)
 
+    const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
+    const [menuClient, setMenuClient] = useState<OAuthClient | null>(null)
+
     const load = useCallback(() => {
+        // `loading` starts true and the retry button raises it again; a refresh after a
+        // mutation keeps the current rows visible instead of flashing a skeleton.
         adminApi
             .clients(rowsPerPage, page * rowsPerPage)
             .then(({ data }) => {
                 setClients(data.items)
                 setTotal(data.total)
                 setError(null)
+                setLoading(false)
             })
-            .catch((caught: unknown) => setError(caught))
+            .catch((caught: unknown) => {
+                setError(caught)
+                setLoading(false)
+            })
     }, [page, rowsPerPage])
 
     useEffect(load, [load])
+
+    const closeMenu = () => {
+        setMenuAnchor(null)
+        setMenuClient(null)
+    }
 
     const handleRotate = async (client: OAuthClient) => {
         const confirmed = await confirm({
@@ -105,181 +139,287 @@ export default function AdminClientsPage() {
         }
     }
 
+    const registerButton = (
+        <Button
+            variant="contained"
+            startIcon={<Add />}
+            onClick={() => {
+                setEditing(null)
+                setFormOpen(true)
+            }}
+        >
+            Register application
+        </Button>
+    )
+
     return (
         <Stack spacing={3} sx={{ maxWidth: 1200, mx: "auto" }}>
             <PageHeader
                 title="OAuth applications"
                 description="Relying parties allowed to authenticate users against this server."
-                actions={
-                    canWrite && (
-                        <Button
-                            variant="contained"
-                            startIcon={<Add />}
-                            onClick={() => {
-                                setEditing(null)
-                                setFormOpen(true)
-                            }}
-                        >
-                            Register application
-                        </Button>
+                breadcrumbs={[{ label: "Admin", to: "/admin" }]}
+                meta={
+                    !loading &&
+                    error === null && (
+                        <Chip
+                            size="small"
+                            variant="outlined"
+                            label={`${total} ${total === 1 ? "application" : "applications"}`}
+                        />
                     )
                 }
+                actions={canWrite && registerButton}
             />
 
-            {error !== null && <ErrorAlert error={error} />}
+            <Section
+                title="Registered applications"
+                description="Redirect URIs are matched exactly at the authorization endpoint — open one to review them."
+                disableBodyPadding
+            >
+                {error !== null && (
+                    <>
+                        <Box sx={{ p: 2 }}>
+                            <ErrorAlert
+                                error={error}
+                                onRetry={() => {
+                                    setLoading(true)
+                                    setError(null)
+                                    load()
+                                }}
+                            />
+                        </Box>
+                        <Divider />
+                    </>
+                )}
 
-            <Card>
-                <TableContainer>
+                <TableContainer sx={{ overflowX: "auto" }}>
                     <Table size="small">
                         <TableHead>
                             <TableRow>
                                 <TableCell>Application</TableCell>
                                 <TableCell>Type</TableCell>
-                                <TableCell>Redirect URIs</TableCell>
-                                <TableCell>Scopes</TableCell>
+                                <TableCell sx={{ display: { xs: "none", lg: "table-cell" } }}>
+                                    Scopes
+                                </TableCell>
                                 <TableCell>Status</TableCell>
-                                <TableCell>Created</TableCell>
+                                <TableCell sx={{ display: { xs: "none", md: "table-cell" } }}>
+                                    Created
+                                </TableCell>
                                 <TableCell align="right">Actions</TableCell>
                             </TableRow>
                         </TableHead>
 
                         <TableBody>
-                            {clients.map((client) => (
-                                <TableRow key={client.client_id} hover>
-                                    <TableCell>
-                                        <Typography sx={{ fontWeight: 500 }}>{client.name}</Typography>
-                                        <Typography
-                                            variant="caption"
-                                            sx={{ color: "text.secondary", fontFamily: "monospace" }}
-                                        >
-                                            {client.client_id}
-                                        </Typography>
-                                    </TableCell>
+                            {loading && <TableSkeleton rows={4} columns={COLUMN_COUNT} />}
 
-                                    <TableCell>
-                                        <Stack spacing={0.5}>
-                                            <Chip
-                                                label={client.type.toLowerCase()}
-                                                size="small"
-                                                color={
-                                                    client.type === "CONFIDENTIAL" ? "secondary" : "default"
+                            {!loading &&
+                                clients.map((client) => (
+                                    <TableRow key={client.client_id} hover>
+                                        <TableCell sx={{ maxWidth: 320 }}>
+                                            <Typography sx={{ fontWeight: 500 }}>
+                                                {client.name}
+                                            </Typography>
+
+                                            <Typography
+                                                variant="caption"
+                                                sx={{
+                                                    display: "block",
+                                                    color: "text.secondary",
+                                                    fontFamily: MONO_FONT,
+                                                    wordBreak: "break-all",
+                                                }}
+                                            >
+                                                {client.client_id}
+                                            </Typography>
+
+                                            {/* The full redirect-URI list used to be the widest
+                                                thing on the page; it lives in the edit dialog now
+                                                and only its shape is summarised here. */}
+                                            <Tooltip
+                                                title={
+                                                    client.redirect_uris.length === 0 ? (
+                                                        "No redirect URI registered — the authorization endpoint will reject every request from this client."
+                                                    ) : (
+                                                        <Box
+                                                            component="ul"
+                                                            sx={{
+                                                                m: 0,
+                                                                pl: 2,
+                                                                fontFamily: MONO_FONT,
+                                                                wordBreak: "break-all",
+                                                            }}
+                                                        >
+                                                            {client.redirect_uris.map((uri) => (
+                                                                <li key={uri}>{uri}</li>
+                                                            ))}
+                                                        </Box>
+                                                    )
                                                 }
-                                                variant="outlined"
-                                                sx={{ textTransform: "capitalize", width: "fit-content" }}
-                                            />
-                                            {client.has_secret && (
-                                                <Typography
-                                                    variant="caption"
-                                                    sx={{ color: "text.secondary" }}
+                                            >
+                                                <Box
+                                                    component="span"
+                                                    tabIndex={0}
+                                                    sx={{
+                                                        display: "inline-block",
+                                                        mt: 0.5,
+                                                        fontSize: "0.75rem",
+                                                        color:
+                                                            client.redirect_uris.length === 0
+                                                                ? "error.main"
+                                                                : "text.secondary",
+                                                        borderBottom: "1px dotted",
+                                                        borderColor: "divider",
+                                                    }}
                                                 >
-                                                    secret set
-                                                </Typography>
-                                            )}
-                                        </Stack>
-                                    </TableCell>
+                                                    {client.redirect_uris.length === 0
+                                                        ? "No redirect URI"
+                                                        : `${client.redirect_uris.length} redirect URI${
+                                                              client.redirect_uris.length === 1
+                                                                  ? ""
+                                                                  : "s"
+                                                          }`}
+                                                </Box>
+                                            </Tooltip>
+                                        </TableCell>
 
-                                    <TableCell sx={{ maxWidth: 260 }}>
-                                        <Typography
-                                            variant="caption"
-                                            sx={{ color: "text.secondary", wordBreak: "break-all" }}
-                                        >
-                                            {client.redirect_uris.join(", ") || "—"}
-                                        </Typography>
-                                    </TableCell>
-
-                                    <TableCell>
-                                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                                            {client.scopes.map((scope) => (
-                                                <Chip key={scope} label={scope} size="small" />
-                                            ))}
-                                        </Box>
-                                    </TableCell>
-
-                                    <TableCell>
-                                        <Stack spacing={0.5}>
-                                            <Chip
-                                                label={client.enabled ? "enabled" : "disabled"}
-                                                size="small"
-                                                color={client.enabled ? "success" : "default"}
-                                                variant="outlined"
-                                                sx={{ width: "fit-content" }}
-                                            />
-                                            {client.skip_consent && (
+                                        <TableCell>
+                                            <Stack sx={{ gap: 0.5 }}>
                                                 <Chip
-                                                    label="skips consent"
+                                                    label={client.type.toLowerCase()}
                                                     size="small"
-                                                    color="warning"
+                                                    color={
+                                                        client.type === "CONFIDENTIAL"
+                                                            ? "secondary"
+                                                            : "default"
+                                                    }
+                                                    variant="outlined"
+                                                    sx={{
+                                                        textTransform: "capitalize",
+                                                        width: "fit-content",
+                                                    }}
+                                                />
+
+                                                {client.has_secret && (
+                                                    <Typography
+                                                        variant="caption"
+                                                        sx={{ color: "text.secondary" }}
+                                                    >
+                                                        secret set
+                                                    </Typography>
+                                                )}
+                                            </Stack>
+                                        </TableCell>
+
+                                        <TableCell
+                                            sx={{
+                                                display: { xs: "none", lg: "table-cell" },
+                                                maxWidth: 220,
+                                            }}
+                                        >
+                                            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                                                {client.scopes.map((scope) => (
+                                                    <Chip key={scope} label={scope} size="small" />
+                                                ))}
+
+                                                {client.scopes.length === 0 && (
+                                                    <Typography
+                                                        variant="caption"
+                                                        sx={{ color: "text.secondary" }}
+                                                    >
+                                                        None
+                                                    </Typography>
+                                                )}
+                                            </Box>
+                                        </TableCell>
+
+                                        <TableCell>
+                                            <Stack sx={{ gap: 0.5 }}>
+                                                <Chip
+                                                    label={client.enabled ? "enabled" : "disabled"}
+                                                    size="small"
+                                                    color={client.enabled ? "success" : "default"}
                                                     variant="outlined"
                                                     sx={{ width: "fit-content" }}
                                                 />
-                                            )}
-                                        </Stack>
-                                    </TableCell>
 
-                                    <TableCell>{formatDate(client.created_at)}</TableCell>
+                                                {client.skip_consent && (
+                                                    <Tooltip title="Users are never shown the consent screen for this application.">
+                                                        <Chip
+                                                            label="skips consent"
+                                                            size="small"
+                                                            color="warning"
+                                                            variant="outlined"
+                                                            sx={{ width: "fit-content" }}
+                                                        />
+                                                    </Tooltip>
+                                                )}
+                                            </Stack>
+                                        </TableCell>
 
-                                    <TableCell align="right">
-                                        <Stack direction="row" spacing={0.5} sx={{ justifyContent: "flex-end" }}>
-                                            <Tooltip title="Edit">
-                                                <span>
-                                                    <IconButton
-                                                        size="small"
-                                                        disabled={!canWrite}
-                                                        onClick={() => {
-                                                            setEditing(client)
-                                                            setFormOpen(true)
-                                                        }}
-                                                    >
-                                                        <Edit fontSize="small" />
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
+                                        <TableCell
+                                            sx={{
+                                                display: { xs: "none", md: "table-cell" },
+                                                whiteSpace: "nowrap",
+                                            }}
+                                        >
+                                            {formatDate(client.created_at)}
+                                        </TableCell>
 
-                                            <Tooltip title="Rotate secret">
-                                                <span>
-                                                    <IconButton
-                                                        size="small"
-                                                        disabled={!canWrite || client.type !== "CONFIDENTIAL"}
-                                                        onClick={() => void handleRotate(client)}
-                                                    >
-                                                        <Autorenew fontSize="small" />
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
-
-                                            <Button
-                                                size="small"
-                                                disabled={!canWrite}
-                                                onClick={() => void handleToggle(client)}
+                                        <TableCell align="right">
+                                            <Stack
+                                                direction="row"
+                                                sx={{ gap: 0.5, justifyContent: "flex-end" }}
                                             >
-                                                {client.enabled ? "Disable" : "Enable"}
-                                            </Button>
+                                                <Tooltip title={`Edit ${client.name}`}>
+                                                    <span>
+                                                        <IconButton
+                                                            size="small"
+                                                            aria-label={`Edit ${client.name}`}
+                                                            disabled={!canWrite}
+                                                            onClick={() => {
+                                                                setEditing(client)
+                                                                setFormOpen(true)
+                                                            }}
+                                                        >
+                                                            <Edit fontSize="small" />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
 
-                                            <Tooltip title="Delete">
-                                                <span>
-                                                    <IconButton
-                                                        size="small"
-                                                        color="error"
-                                                        disabled={!canWrite}
-                                                        onClick={() => void handleDelete(client)}
-                                                    >
-                                                        <Delete fontSize="small" />
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
-                                        </Stack>
-                                    </TableCell>
-                                </TableRow>
-                            ))}
+                                                <Tooltip title={`More actions for ${client.name}`}>
+                                                    <span>
+                                                        <IconButton
+                                                            size="small"
+                                                            aria-label={`More actions for ${client.name}`}
+                                                            aria-haspopup="menu"
+                                                            aria-expanded={
+                                                                menuClient?.client_id ===
+                                                                client.client_id
+                                                            }
+                                                            disabled={!canWrite}
+                                                            onClick={(event) => {
+                                                                setMenuAnchor(event.currentTarget)
+                                                                setMenuClient(client)
+                                                            }}
+                                                        >
+                                                            <MoreVert fontSize="small" />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                            </Stack>
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
 
-                            {clients.length === 0 && (
-                                <TableRow>
-                                    <TableCell colSpan={7}>
-                                        <Typography variant="body2" sx={{ color: "text.secondary", py: 2 }}>
-                                            No applications registered yet.
-                                        </Typography>
-                                    </TableCell>
-                                </TableRow>
+                            {!loading && error === null && clients.length === 0 && (
+                                <TableStateRow columns={COLUMN_COUNT}>
+                                    <EmptyState
+                                        icon={Apps}
+                                        title="No applications registered yet"
+                                        description="A relying party has to be registered here before it can send users to the authorization endpoint."
+                                        action={canWrite && registerButton}
+                                    />
+                                </TableStateRow>
                             )}
                         </TableBody>
                     </Table>
@@ -297,7 +437,86 @@ export default function AdminClientsPage() {
                     }}
                     rowsPerPageOptions={[10, 25, 50, 100]}
                 />
-            </Card>
+            </Section>
+
+            <Menu
+                open={menuAnchor !== null && menuClient !== null}
+                anchorEl={menuAnchor}
+                onClose={closeMenu}
+                anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+                transformOrigin={{ vertical: "top", horizontal: "right" }}
+            >
+                <MenuItem
+                    disabled={!canWrite || !menuClient}
+                    onClick={() => {
+                        const client = menuClient
+                        closeMenu()
+                        if (client) void handleToggle(client)
+                    }}
+                >
+                    <ListItemIcon>
+                        {menuClient?.enabled ? (
+                            <ToggleOff fontSize="small" />
+                        ) : (
+                            <ToggleOn fontSize="small" />
+                        )}
+                    </ListItemIcon>
+                    <ListItemText
+                        primary={menuClient?.enabled ? "Disable application" : "Enable application"}
+                        secondary={
+                            menuClient?.enabled
+                                ? "Stops new authorizations"
+                                : "Allows authorizations again"
+                        }
+                    />
+                </MenuItem>
+
+                <MenuItem
+                    // Destructive: the current secret dies the moment this runs, so it is
+                    // marked as such here as well as in the confirmation.
+                    disabled={!canWrite || menuClient?.type !== "CONFIDENTIAL"}
+                    onClick={() => {
+                        const client = menuClient
+                        closeMenu()
+                        if (client) void handleRotate(client)
+                    }}
+                    sx={{ color: "error.main" }}
+                >
+                    <ListItemIcon sx={{ color: "inherit" }}>
+                        <Autorenew fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText
+                        primary="Rotate secret"
+                        secondary={
+                            menuClient?.type === "CONFIDENTIAL"
+                                ? "Invalidates the current secret"
+                                : "Public clients have no secret"
+                        }
+                        slotProps={{ secondary: { sx: { color: "text.secondary" } } }}
+                    />
+                </MenuItem>
+
+                <Divider sx={{ my: 0.5 }} />
+
+                <MenuItem
+                    disabled={!canWrite || !menuClient}
+                    onClick={() => {
+                        const client = menuClient
+                        closeMenu()
+                        if (client) void handleDelete(client)
+                    }}
+                    sx={{ color: "error.main" }}
+                >
+                    <ListItemIcon sx={{ color: "inherit" }}>
+                        <Delete fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText
+                        primary="Delete application"
+                        secondary="Existing tokens and consents stop working"
+                        slotProps={{ secondary: { sx: { color: "text.secondary" } } }}
+                    />
+                </MenuItem>
+            </Menu>
 
             <ClientFormDialog
                 open={formOpen}

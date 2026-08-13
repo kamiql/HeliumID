@@ -82,8 +82,7 @@ fun Route.oauthRoutes(dependencies: HeliumApiDependencies) = route("/oauth2") {
             consentGranted = params["consent"] == "granted",
         )
 
-        val result = dependencies.flowRunner.execute(dependencies.oauthFlows.authorize, command, context)
-        when (result) {
+        when (val result = dependencies.flowRunner.execute(dependencies.oauthFlows.authorize, command, context)) {
             is FlowResult.Success -> when (val outcome = result.value) {
                 is AuthorizeResult.Redirect -> call.respondRedirect(outcome.location)
 

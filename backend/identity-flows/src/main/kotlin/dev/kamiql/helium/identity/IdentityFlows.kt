@@ -13,8 +13,8 @@ import dev.kamiql.helium.domain.error.AuthError
 import dev.kamiql.helium.domain.event.DomainEvent
 import dev.kamiql.helium.domain.event.VerificationPurpose
 import dev.kamiql.helium.domain.mfa.MfaPolicy
-import dev.kamiql.helium.domain.mfa.MfaTransaction
 import dev.kamiql.helium.domain.mfa.MfaType
+import dev.kamiql.helium.domain.mfa.WebAuthnAuthenticationOptions
 import dev.kamiql.helium.domain.policy.Lifetimes
 import dev.kamiql.helium.domain.policy.Permission
 import dev.kamiql.helium.domain.policy.Principal
@@ -26,7 +26,10 @@ import dev.kamiql.helium.domain.repository.SessionRepository
 import dev.kamiql.helium.domain.repository.UserRepository
 import dev.kamiql.helium.domain.session.AuthenticationMethod
 import dev.kamiql.helium.domain.session.IssuedSession
+import dev.kamiql.helium.domain.session.IssuedTrustedDevice
 import dev.kamiql.helium.domain.session.SessionRevocationReason
+import dev.kamiql.helium.domain.session.TrustedDeviceCheck
+import dev.kamiql.helium.domain.session.TrustedDeviceRevocationReason
 import dev.kamiql.helium.domain.user.User
 import dev.kamiql.helium.domain.user.UserStatus
 import dev.kamiql.helium.flow.ChallengeDescriptor
@@ -49,6 +52,7 @@ import dev.kamiql.helium.flow.requirement.ReauthenticatedWithin
 import dev.kamiql.helium.flow.requirement.Unauthenticated
 import dev.kamiql.helium.flow.step
 import dev.kamiql.helium.spi.MfaMethodRegistry
+import dev.kamiql.helium.spi.VerificationChallenge
 import org.slf4j.LoggerFactory
 
 /**
@@ -69,6 +73,7 @@ class IdentityFlows(
     private val passwordHasher: PasswordHasher,
     private val passwordPolicy: PasswordPolicyService,
     private val sessionService: SessionService,
+    private val trustedDevices: TrustedDeviceService,
     private val verificationTokens: VerificationTokenService,
     private val transactions: SecurityTransactionStore,
     private val mfaMethods: MfaMethodRegistry,
@@ -88,6 +93,11 @@ class IdentityFlows(
     private val userKey = FlowStateKey<User>("user")
     private val issuedSessionKey = FlowStateKey<IssuedSession>("session", sensitive = true)
     private val newDeviceKey = FlowStateKey<Boolean>("new_device")
+    private val trustedDeviceKey =
+        FlowStateKey<IssuedTrustedDevice>("trusted_device", sensitive = true)
+
+    /** A device cookie was presented and did not earn trust, so the browser is holding a dud. */
+    private val staleTrustedDeviceKey = FlowStateKey<Boolean>("trusted_device_stale")
     private val verificationTokenKey =
         FlowStateKey<VerificationTokenService.Issued>("verification_token", sensitive = true)
     private val revokedCountKey = FlowStateKey<Int>("revoked_sessions")
@@ -350,7 +360,7 @@ class IdentityFlows(
             )
 
             step(
-                step("enforce-mfa-policy") { _, context, state ->
+                step("enforce-mfa-policy") { command, context, state ->
                     val user = state.require(userKey)
                     val enrolled = mfaMethods.enrolledMethods(user.id)
                     val privileged = roles.permissionsOf(user.id).any { it in Permission.STEP_UP_REQUIRED }
@@ -366,6 +376,33 @@ class IdentityFlows(
                         // Policy demands a factor the user has not set up. Refusing here rather
                         // than waving them through is the whole value of the policy.
                         return@step StepResult.Fail(AuthError.Forbidden("mfa:enrollment-required"))
+                    }
+
+                    // A device the user previously proved a factor on may skip the challenge.
+                    //
+                    // This applies under every policy, including REQUIRED, because REQUIRED means
+                    // "must have enrolled a factor" — the branch above rejects an account that has
+                    // not — and not "must present it on every sign-in". A deployment that means
+                    // the stricter thing sets HELIUM_TRUSTED_DEVICE_DAYS=0.
+                    //
+                    // Privileged accounts never skip, and the check is bypassed entirely for them
+                    // rather than evaluated and discarded: an admin's cookie must not even be
+                    // rotated by this path, so that nothing about their login depends on a value
+                    // an attacker with the laptop could have copied.
+                    if (!privileged) {
+                        when (val check = trustedDevices.check(user.id, command.trustedDeviceToken, context, context.now)) {
+                            is TrustedDeviceCheck.Trusted -> {
+                                state[trustedDeviceKey] = check.rotated
+                                return@step StepResult.Continue
+                            }
+
+                            // The cookie was copied. The service has already revoked the device
+                            // and notified the owner in its own transaction; this login simply
+                            // falls through to a full challenge like any other.
+                            is TrustedDeviceCheck.Reused,
+                            TrustedDeviceCheck.NotTrusted,
+                            -> state[staleTrustedDeviceKey] = true
+                        }
                     }
 
                     val transactionId = TransactionId(random.token(24))
@@ -406,14 +443,21 @@ class IdentityFlows(
                 effect("login-succeeded") { _, _, state ->
                     val user = state.require(userKey)
                     val issued = state.require(issuedSessionKey)
-                    listOf(
-                        DomainEvent.LoginSucceeded(
-                            userId = user.id,
-                            sessionId = issued.session.id,
-                            clientId = issued.session.clientId,
-                            newDevice = state.require(newDeviceKey),
-                        ),
-                    )
+                    buildList {
+                        add(
+                            DomainEvent.LoginSucceeded(
+                                userId = user.id,
+                                sessionId = issued.session.id,
+                                clientId = issued.session.clientId,
+                                newDevice = state.require(newDeviceKey),
+                            ),
+                        )
+                        // Records that this sign-in skipped the second factor. Without it the
+                        // audit trail cannot distinguish a full login from a trusted-device one.
+                        state[trustedDeviceKey]?.let {
+                            add(DomainEvent.TrustedDeviceUsed(user.id, it.device.id))
+                        }
+                    }
                 },
             )
 
@@ -423,6 +467,86 @@ class IdentityFlows(
                     session = issued,
                     userId = issued.session.userId,
                     newDevice = state.require(newDeviceKey),
+                    trustedDevice = when {
+                        state[trustedDeviceKey] != null -> state.require(trustedDeviceKey)
+                            .let { TrustedDeviceDirective.Issue(it, it.device.expiresAt) }
+
+                        // The browser sent a cookie that bought it nothing — expired, revoked,
+                        // or replayed. Reaching this line means the login succeeded anyway
+                        // (no factor was required), so take the opportunity to bin the value
+                        // rather than let it be re-presented on every future sign-in.
+                        state[staleTrustedDeviceKey] == true -> TrustedDeviceDirective.Clear
+
+                        else -> TrustedDeviceDirective.Keep
+                    },
+                )
+            }
+        }
+
+    /**
+     * Hands out the server-chosen nonce a signing method needs before it can be answered.
+     *
+     * Runs between the password and the second factor, so there is no session yet and the flow
+     * declares no authentication requirement — exactly like [completeMfa]. The MFA transaction
+     * is the only thing authorizing the call, and it is **peeked, never taken**: consuming it
+     * here would mean asking for a challenge burned the user's one attempt, turning every
+     * passkey sign-in into a guaranteed restart.
+     *
+     * A method with nothing to hand out — TOTP, recovery codes — is a success with no options,
+     * not an error. The caller asked what it needs to answer, and the honest answer is
+     * "nothing".
+     */
+    val beginMfaChallenge: Flow<BeginMfaChallengeCommand, MfaChallengeStarted> =
+        flow(FlowId("identity.begin-mfa-challenge")) {
+            transaction(TransactionPolicy.Required)
+            auditAs("auth.mfa-challenge-started")
+
+            // A challenge endpoint with no limit is a free oracle: it accepts an unauthenticated
+            // handle and does work for whoever presents one. Two dimensions, because the
+            // per-transaction bucket alone is trivially sidestepped by inventing a new
+            // transaction id for every request.
+            require(
+                RateLimited<BeginMfaChallengeCommand>(
+                    "mfa.challenge", RateLimit.TOTP_VERIFY, rateLimiter,
+                ) { command, _ -> command.transactionId.value },
+            )
+            require(
+                RateLimited<BeginMfaChallengeCommand>(
+                    "mfa.challenge.ip", RateLimit.LOGIN_PER_IP, rateLimiter,
+                ) { _, context -> context.ipAddress },
+            )
+
+            step(
+                step("issue-challenge") { command, context, state ->
+                    // peek, not take. See the flow comment: this is the single most important
+                    // line in it.
+                    val payload = transactions.peek(command.transactionId, MFA_TRANSACTION_KIND)
+                        ?: return@step StepResult.Fail(AuthError.MfaExpired)
+                    val userId = UserId.parse(payload)
+                        ?: return@step StepResult.Fail(AuthError.MfaExpired)
+
+                    // Absent and suspended accounts answer the same way an expired handle does.
+                    // The caller learns only that this handle buys them nothing.
+                    val user = users.findById(userId)
+                        ?: return@step StepResult.Fail(AuthError.MfaExpired)
+                    user.toAccessError()?.let { return@step StepResult.Fail(it) }
+
+                    val method = mfaMethods[command.method]
+                        ?: return@step StepResult.Fail(AuthError.MfaInvalid)
+
+                    when (val challenge = method.beginVerification(userId, context.now)) {
+                        null -> Unit
+                        is VerificationChallenge.WebAuthn -> state[webauthnOptionsKey] = challenge.options
+                    }
+                    state[mfaMethodKey] = command.method
+                    StepResult.Continue
+                },
+            )
+
+            result { state ->
+                MfaChallengeStarted(
+                    method = state.require(mfaMethodKey),
+                    webauthnOptions = state[webauthnOptionsKey],
                 )
             }
         }
@@ -457,9 +581,13 @@ class IdentityFlows(
                     val method = mfaMethods[command.method]
                         ?: return@step StepResult.Fail(AuthError.MfaInvalid)
 
+                    // Passed straight through: the flow does not know, and must not care,
+                    // whether this is a typed code or a signed assertion. Deciding which shapes
+                    // it accepts is the method's job, and the sealed type makes a mismatch a
+                    // rejection rather than a parse error.
                     val verification = method.verify(
                         userId = userId,
-                        response = dev.kamiql.helium.domain.mfa.MfaResponse(command.code),
+                        response = command.response,
                         now = context.now,
                     )
                     when (verification) {
@@ -500,23 +628,69 @@ class IdentityFlows(
                 },
             )
 
+            step(
+                step("remember-device") { command, context, state ->
+                    // The one place a trusted device may be minted: a second factor was just
+                    // verified. Minting anywhere else — on a password-only login in particular —
+                    // would make the first sign-in on a new machine its own bypass.
+                    if (!command.rememberDevice) return@step StepResult.Continue
+
+                    val user = state.require(userKey)
+                    val privileged = roles.permissionsOf(user.id).any { it in Permission.STEP_UP_REQUIRED }
+                    if (privileged) {
+                        // Silently ignored rather than rejected: the account still signs in, it
+                        // just does not get the exemption. Failing here would turn a checkbox
+                        // into a login error for exactly the accounts that must keep working.
+                        log.info("ignoring remember-device for privileged user {}", user.id)
+                        return@step StepResult.Continue
+                    }
+
+                    trustedDevices.remember(user.id, context, context.now)
+                        ?.let { state[trustedDeviceKey] = it }
+                    StepResult.Continue
+                },
+            )
+
             effect(
                 effect("login-succeeded") { _, _, state ->
                     val issued = state.require(issuedSessionKey)
-                    listOf(
-                        DomainEvent.LoginSucceeded(
-                            userId = issued.session.userId,
-                            sessionId = issued.session.id,
-                            clientId = issued.session.clientId,
-                            newDevice = state.require(newDeviceKey),
-                        ),
-                    )
+                    buildList {
+                        add(
+                            DomainEvent.LoginSucceeded(
+                                userId = issued.session.userId,
+                                sessionId = issued.session.id,
+                                clientId = issued.session.clientId,
+                                newDevice = state.require(newDeviceKey),
+                            ),
+                        )
+                        state[trustedDeviceKey]?.let {
+                            add(
+                                DomainEvent.TrustedDeviceAdded(
+                                    userId = issued.session.userId,
+                                    deviceId = it.device.id,
+                                    expiresAt = it.device.expiresAt,
+                                ),
+                            )
+                        }
+                    }
                 },
             )
 
             result { state ->
                 val issued = state.require(issuedSessionKey)
-                LoginSucceeded(issued, issued.session.userId, state.require(newDeviceKey))
+                LoginSucceeded(
+                    session = issued,
+                    userId = issued.session.userId,
+                    newDevice = state.require(newDeviceKey),
+                    trustedDevice = state[trustedDeviceKey]
+                        ?.let { TrustedDeviceDirective.Issue(it, it.device.expiresAt) }
+                    // Getting here at all means a challenge was raised, which means whatever
+                    // device cookie this browser holds did not satisfy it. Clearing is therefore
+                    // always right when the user did not ask to be remembered again — and it is
+                    // the path that finally disposes of a cookie whose device was revoked for
+                    // reuse, since that login ended in a challenge and could not say so.
+                        ?: TrustedDeviceDirective.Clear,
+                )
             }
         }
 
@@ -585,6 +759,93 @@ class IdentityFlows(
             )
 
             result { }
+        }
+
+    /**
+     * Revokes one of the caller's own trusted devices.
+     *
+     * A flow rather than a direct service call, for the same reason [revokeSession] is one: this
+     * changes a security posture and therefore owes the audit log a row. The `false` return from
+     * the repository covers "no such device", "someone else's device" and "already revoked"
+     * alike, and all three surface as [AuthError.NotFound] — distinguishing them would make the
+     * endpoint an oracle for which device ids exist.
+     */
+    val revokeTrustedDevice: Flow<RevokeTrustedDeviceCommand, Unit> =
+        flow(FlowId("identity.revoke-trusted-device")) {
+            transaction(TransactionPolicy.Required)
+            require(Authenticated)
+            requirePermission(Permission.ACCOUNT_SESSION_MANAGE)
+            auditAs("auth.trusted-device-revoked")
+
+            step(
+                step("revoke") { command, context, state ->
+                    val userId = context.actor.userIdOrNull
+                        ?: return@step StepResult.Fail(AuthError.AuthenticationRequired)
+
+                    val revoked = trustedDevices.revoke(
+                        userId = userId,
+                        id = command.deviceId,
+                        now = context.now,
+                        reason = TrustedDeviceRevocationReason.USER_REVOKED,
+                    )
+                    if (!revoked) return@step StepResult.Fail(AuthError.NotFound)
+
+                    state[userIdKey] = userId
+                    StepResult.Continue
+                },
+            )
+
+            effect(
+                effect("trusted-device-revoked") { command, _, state ->
+                    listOf(
+                        DomainEvent.TrustedDeviceRevoked(
+                            userId = state.require(userIdKey),
+                            deviceId = command.deviceId,
+                            reason = TrustedDeviceRevocationReason.USER_REVOKED,
+                            count = 1,
+                        ),
+                    )
+                },
+            )
+
+            result { }
+        }
+
+    /** Revokes every trusted device the caller has, including the one they are calling from. */
+    val revokeAllTrustedDevices: Flow<RevokeAllTrustedDevicesCommand, TrustedDevicesRevoked> =
+        flow(FlowId("identity.revoke-trusted-devices")) {
+            transaction(TransactionPolicy.Required)
+            require(Authenticated)
+            requirePermission(Permission.ACCOUNT_SESSION_MANAGE)
+            auditAs("auth.trusted-device-revoked")
+
+            step(
+                step("revoke-all") { _, context, state ->
+                    val userId = context.actor.userIdOrNull
+                        ?: return@step StepResult.Fail(AuthError.AuthenticationRequired)
+                    state[userIdKey] = userId
+                    state[revokedCountKey] = trustedDevices.revokeAll(
+                        userId, context.now, TrustedDeviceRevocationReason.USER_REVOKED,
+                    )
+                    StepResult.Continue
+                },
+            )
+
+            effect(
+                effect("trusted-devices-revoked") { _, _, state ->
+                    listOf(
+                        DomainEvent.TrustedDeviceRevoked(
+                            userId = state.require(userIdKey),
+                            // No single id: this is the "forget everything" action.
+                            deviceId = null,
+                            reason = TrustedDeviceRevocationReason.USER_REVOKED,
+                            count = state.require(revokedCountKey),
+                        ),
+                    )
+                },
+            )
+
+            result { state -> TrustedDevicesRevoked(state.require(revokedCountKey)) }
         }
 
     // =========================================================================
@@ -697,6 +958,11 @@ class IdentityFlows(
                     val user = state.require(userKey)
                     sessions.revokeAllForUser(user.id, context.now, SessionRevocationReason.PASSWORD_RESET)
                     refreshTokens.revokeFamiliesForUser(user.id, context.now)
+                    // A reset is the flow someone runs after losing control of the account, so
+                    // the MFA exemptions granted before it are exactly what must not survive.
+                    trustedDevices.revokeAll(
+                        user.id, context.now, TrustedDeviceRevocationReason.PASSWORD_RESET,
+                    )
                 },
             )
 
@@ -778,6 +1044,13 @@ class IdentityFlows(
                         except = currentSession,
                     )
                     refreshTokens.revokeFamiliesForUser(user.id, context.now)
+                    // No `except` counterpart here: a device exemption is not the session the
+                    // user is looking at, so keeping one would silently preserve the weaker
+                    // credential while revoking the stronger ones. The next sign-in on this
+                    // machine asks for the factor once and the user can tick the box again.
+                    trustedDevices.revokeAll(
+                        user.id, context.now, TrustedDeviceRevocationReason.PASSWORD_CHANGED,
+                    )
                 },
             )
 
@@ -981,6 +1254,11 @@ class IdentityFlows(
                     val userId = state.require(userIdKey)
                     sessions.revokeAllForUser(userId, context.now, SessionRevocationReason.ACCOUNT_DELETED)
                     refreshTokens.revokeFamiliesForUser(userId, context.now)
+                    // Explicit, not left to the foreign key: this is a soft delete, so the users
+                    // row survives and `ON DELETE CASCADE` never fires.
+                    trustedDevices.revokeAll(
+                        userId, context.now, TrustedDeviceRevocationReason.ACCOUNT_DELETED,
+                    )
                 },
             )
 
@@ -1000,6 +1278,10 @@ class IdentityFlows(
     private val userIdKey = FlowStateKey<UserId>("user_id")
     private val duplicateKey = FlowStateKey<Boolean>("duplicate")
     private val mfaMethodKey = FlowStateKey<MfaType>("mfa_method")
+
+    /** Sensitive: the options carry the single-use nonce the authenticator will sign. */
+    private val webauthnOptionsKey =
+        FlowStateKey<WebAuthnAuthenticationOptions>("webauthn_options", sensitive = true)
 
     companion object {
         /** Kind used for MFA handles in the security transaction store. */

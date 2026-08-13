@@ -1,17 +1,7 @@
-import {
-    Avatar,
-    Box,
-    Button,
-    Container,
-    Divider,
-    Link as MuiLink,
-    Paper,
-    TextField,
-    Typography,
-} from "@mui/material"
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined"
+import { Box, Button, Divider, Link as MuiLink, Stack, TextField, Typography } from "@mui/material"
 import { useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router"
+import AuthCard from "../../components/auth/AuthCard.tsx"
 import PasswordField from "../../components/PasswordField.tsx"
 import ErrorAlert from "../../components/ErrorAlert.tsx"
 import MFADialog from "../../components/MFADialog.tsx"
@@ -21,7 +11,7 @@ import { authApi } from "../../api/auth.ts"
 import { ErrorCode, toHeliumError } from "../../api/problem.ts"
 import { notify } from "../../stores/notice.store.ts"
 import type { MfaChallenge } from "../../stores/auth.store.ts"
-import type { MfaMethod } from "../../api/types.ts"
+import type { MfaSecondFactor } from "../../api/types.ts"
 
 export default function LoginPage() {
     const { login, completeMfa, loading } = useAuth()
@@ -72,8 +62,8 @@ export default function LoginPage() {
         }
     }
 
-    const handleMfa = async (method: MfaMethod, code: string) => {
-        await completeMfa(challenge!.transactionId, method, code)
+    const handleMfa = async (factor: MfaSecondFactor, rememberDevice: boolean) => {
+        await completeMfa(challenge!.transactionId, factor, rememberDevice)
         setChallenge(null)
         finish()
     }
@@ -87,153 +77,109 @@ export default function LoginPage() {
         }
     }
 
+    // The submit guard rejects the form before it reaches the network, so an error raised while
+    // a field is empty is the local one — it belongs on that field, not in a banner.
+    const blockedLocally = error !== null && (!identifier || !password)
+
     return (
         <>
-            <Container component="main" maxWidth="xs">
-                <Paper
-                    elevation={8}
-                    sx={{
-                        p: 4,
-                        width: "100%",
-                        borderRadius: 3,
-                        backgroundColor: "background.paper",
+            <AuthCard
+                title="Sign in"
+                subtitle="Use your HeliumID account to continue."
+                footer={
+                    <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                        Don&apos;t have an account?{" "}
+                        <MuiLink component={Link} to="/register">
+                            Sign up
+                        </MuiLink>
+                    </Typography>
+                }
+            >
+                <Box
+                    component="form"
+                    onSubmit={(event) => {
+                        event.preventDefault()
+                        void handleLogin()
                     }}
                 >
-                    <Box
-                        sx={{
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                        }}
-                    >
-                        <Avatar
-                            sx={{
-                                mb: 2,
-                                bgcolor: "primary.main",
+                    <Stack spacing={2}>
+                        <TextField
+                            required
+                            fullWidth
+                            label="Username or email"
+                            autoComplete="username"
+                            autoFocus
+                            value={identifier}
+                            onChange={(event) => {
+                                setIdentifier(event.target.value)
+                                setError(null)
                             }}
-                        >
-                            <LockOutlinedIcon />
-                        </Avatar>
+                            error={blockedLocally && !identifier}
+                            helperText={
+                                blockedLocally && !identifier
+                                    ? "Enter your username or email address."
+                                    : undefined
+                            }
+                        />
 
-                        <Typography
-                            component="h1"
-                            variant="h4"
-                            sx={{
-                                fontFamily: "Silkscreen",
-                                mb: 3,
+                        <PasswordField
+                            required
+                            fullWidth
+                            label="Password"
+                            autoComplete="current-password"
+                            value={password}
+                            onType={(value) => {
+                                setPassword(value)
+                                setError(null)
                             }}
-                        >
+                            error={blockedLocally && !password}
+                            helperText={
+                                blockedLocally && !password ? "Enter your password." : undefined
+                            }
+                        />
+
+                        {error !== null && !blockedLocally && (
+                            <ErrorAlert
+                                error={error}
+                                // The remedy belongs with the problem, not further down the form.
+                                action={
+                                    needsVerification ? (
+                                        <Button
+                                            color="inherit"
+                                            size="small"
+                                            onClick={() => void handleResend()}
+                                        >
+                                            Resend verification email
+                                        </Button>
+                                    ) : undefined
+                                }
+                            />
+                        )}
+
+                        <Button type="submit" fullWidth variant="contained" disabled={loading}>
                             Sign in
-                        </Typography>
+                        </Button>
 
-                        <Box
-                            component="form"
-                            sx={{ width: "100%" }}
-                            onSubmit={(event) => {
-                                event.preventDefault()
-                                void handleLogin()
-                            }}
-                        >
-                            <TextField
-                                margin="normal"
-                                required
-                                fullWidth
-                                label="Username or email"
-                                autoComplete="username"
-                                autoFocus
-                                value={identifier}
-                                onChange={(event) => {
-                                    setIdentifier(event.target.value)
-                                    setError(null)
-                                }}
-                                error={Boolean(error) && !identifier}
-                            />
-
-                            <PasswordField
-                                margin="normal"
-                                required
-                                fullWidth
-                                label="Password"
-                                autoComplete="current-password"
-                                value={password}
-                                onType={(value) => {
-                                    setPassword(value)
-                                    setError(null)
-                                }}
-                                error={Boolean(error) && !password}
-                            />
-
-                            {error !== null && (identifier && password ? (
-                                <Box sx={{ mt: 2 }}>
-                                    <ErrorAlert error={error} />
-                                </Box>
-                            ) : (
-                                <Typography color="error" variant="body2" sx={{ mt: 1 }}>
-                                    Please fill out all fields
-                                </Typography>
-                            ))}
-
-                            {needsVerification && (
-                                <Button
-                                    fullWidth
-                                    variant="text"
-                                    sx={{ mt: 1 }}
-                                    onClick={() => void handleResend()}
-                                >
-                                    Resend verification email
-                                </Button>
-                            )}
-
-                            <Button
-                                type="submit"
-                                fullWidth
-                                variant="contained"
-                                disabled={loading}
-                                sx={{
-                                    mt: 2,
-                                    mb: 2,
-                                    py: 1.2,
-                                }}
-                            >
-                                Sign in
-                            </Button>
-
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    justifyContent: "center",
-                                }}
-                            >
-                                <MuiLink component={Link} to="/forgot-password" variant="body2">
-                                    Forgot password?
-                                </MuiLink>
-                            </Box>
-
-                            <Divider sx={{ my: 2 }}>or</Divider>
-
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    gap: 2,
-                                }}
-                            >
-                                <ProviderButtons />
-
-                                <Typography sx={{ textAlign: "center" }}>
-                                    Don&apos;t have an account?{" "}
-                                    <MuiLink component={Link} to="/register" variant="body2">
-                                        Sign up
-                                    </MuiLink>
-                                </Typography>
-                            </Box>
+                        <Box sx={{ display: "flex", justifyContent: "center" }}>
+                            <MuiLink component={Link} to="/forgot-password" variant="body2">
+                                Forgot password?
+                            </MuiLink>
                         </Box>
-                    </Box>
-                </Paper>
-            </Container>
+                    </Stack>
+
+                    <Divider sx={{ my: 3 }}>
+                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                            or
+                        </Typography>
+                    </Divider>
+
+                    <ProviderButtons />
+                </Box>
+            </AuthCard>
 
             <MFADialog
                 challenge={challenge}
+                allowRememberDevice
                 onSubmit={handleMfa}
                 onCancel={() => {
                     setChallenge(null)

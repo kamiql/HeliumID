@@ -93,6 +93,14 @@ data class Scope(
     val description: String,
     /** Granted without appearing on the consent screen (`openid`). */
     val implicit: Boolean = false,
+    /**
+     * Part of the protocol rather than of a deployment's policy.
+     *
+     * Built-in scopes cannot be edited or deleted: `openid` decides whether an ID token is issued
+     * at all and whether `/userinfo` answers, so removing it disables OIDC without any obvious
+     * symptom. Same contract as [dev.kamiql.helium.domain.policy.Role.builtIn].
+     */
+    val builtIn: Boolean = false,
 ) {
     companion object {
         const val OPENID: String = "openid"
@@ -100,13 +108,26 @@ data class Scope(
         const val EMAIL: String = "email"
         const val OFFLINE_ACCESS: String = "offline_access"
 
+        /**
+         * Shape of a registrable scope name.
+         *
+         * Lowercase, and `:` is allowed so a deployment can follow the `resource:action`
+         * convention `Permission` already uses (`workspace:read`). Whitespace is excluded for a
+         * concrete reason: the `scope` parameter and the `scope` claim are space-delimited, so a
+         * name containing a space would silently split into two scopes on the wire.
+         */
+        val NAME_PATTERN: Regex = Regex("^[a-z0-9][a-z0-9:._-]{2,63}$")
+
         /** Scopes every deployment understands; more are registered per client. */
         val STANDARD: List<Scope> = listOf(
-            Scope(OPENID, "Confirm your identity", implicit = true),
-            Scope(PROFILE, "See your name and username"),
-            Scope(EMAIL, "See your email address"),
-            Scope(OFFLINE_ACCESS, "Stay signed in when you are not using the app"),
+            Scope(OPENID, "Confirm your identity", implicit = true, builtIn = true),
+            Scope(PROFILE, "See your name and username", builtIn = true),
+            Scope(EMAIL, "See your email address", builtIn = true),
+            Scope(OFFLINE_ACCESS, "Stay signed in when you are not using the app", builtIn = true),
         )
+
+        /** Names V5__scope_built_in.sql flags; the write path refuses to change these. */
+        val BUILT_IN_NAMES: Set<String> = STANDARD.map { it.name }.toSet()
     }
 }
 

@@ -5,6 +5,7 @@ import dev.kamiql.helium.domain.repository.AuthorizationCodeRepository
 import dev.kamiql.helium.domain.repository.RefreshTokenRepository
 import dev.kamiql.helium.domain.repository.RevokedTokenRepository
 import dev.kamiql.helium.domain.repository.SessionRepository
+import dev.kamiql.helium.domain.repository.TrustedDeviceRepository
 import dev.kamiql.helium.domain.repository.VerificationTokenRepository
 import dev.kamiql.helium.persistence.repository.IdempotencyStoreImpl
 import dev.kamiql.helium.persistence.repository.OutboxDispatchRepository
@@ -30,6 +31,7 @@ import java.time.Duration
 class MaintenanceJobs(
     private val clock: HeliumClock,
     private val sessions: SessionRepository,
+    private val trustedDevices: TrustedDeviceRepository,
     private val verificationTokens: VerificationTokenRepository,
     private val authorizationCodes: AuthorizationCodeRepository,
     private val refreshTokens: RefreshTokenRepository,
@@ -58,6 +60,10 @@ class MaintenanceJobs(
         val now = clock.now()
 
         val expiredSessions = sessions.deleteExpired(now)
+        // Past its expiry a trusted device grants nothing, so the row is a credential rather
+        // than a security record and goes with the rest of the expired credentials. A device
+        // revoked for reuse is *not* expired, so it survives here for the investigation.
+        val expiredDevices = trustedDevices.deleteExpired(now)
         val expiredVerification = verificationTokens.deleteExpired(now)
         val expiredCodes = authorizationCodes.deleteExpired(now)
         // Only families past their absolute expiry: a family revoked for reuse is retained
@@ -76,9 +82,9 @@ class MaintenanceJobs(
         signingKeyRotation?.runOnce(now)
 
         log.info(
-            "maintenance sweep: sessions={} verification={} codes={} families={} revocations={} " +
-                "idempotency={} outbox={}",
-            expiredSessions, expiredVerification, expiredCodes, expiredFamilies,
+            "maintenance sweep: sessions={} devices={} verification={} codes={} families={} " +
+                "revocations={} idempotency={} outbox={}",
+            expiredSessions, expiredDevices, expiredVerification, expiredCodes, expiredFamilies,
             expiredRevocations, expiredIdempotency, prunedOutbox,
         )
     }
