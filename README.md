@@ -1,5 +1,7 @@
 # HeliumID
 
+# VERSION 2 IS A PROOF OF CONCEPT TO EXPERIMENT WITH CLAUDE CODE
+
 A standards-based identity and authorization provider written in Kotlin and Ktor: local accounts,
 OAuth 2.0 / OpenID Connect, external identity providers, TOTP, and an account API for web, SPA,
 native and subsidiary applications.
