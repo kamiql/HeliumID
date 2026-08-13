@@ -1,5 +1,6 @@
 package dev.kamiql.helium.api
 
+import dev.kamiql.helium.domain.common.ClientId
 import dev.kamiql.helium.domain.common.MfaFactorId
 import dev.kamiql.helium.domain.common.Secret
 import dev.kamiql.helium.domain.common.SessionId
@@ -20,6 +21,7 @@ import dev.kamiql.helium.identity.RegenerateRecoveryCodesCommand
 import dev.kamiql.helium.identity.RemoveWebAuthnCredentialCommand
 import dev.kamiql.helium.identity.RequestEmailChangeCommand
 import dev.kamiql.helium.identity.RevokeAllTrustedDevicesCommand
+import dev.kamiql.helium.identity.RevokeAuthorizationCommand
 import dev.kamiql.helium.identity.RevokeSessionCommand
 import dev.kamiql.helium.identity.RevokeTrustedDeviceCommand
 import dev.kamiql.helium.identity.UnlinkProviderCommand
@@ -407,6 +409,46 @@ fun Route.accountRoutes(dependencies: HeliumApiDependencies) = route("/me") {
         val result = dependencies.flowRunner.execute(
             flow = dependencies.providerFlows.unlinkProvider,
             command = UnlinkProviderCommand(provider),
+            context = context,
+        )
+        call.respondFlowNoContent(result)
+    }
+
+    // --- authorized applications --------------------------------------------------
+
+    /**
+     * Applications that can reach this account.
+     *
+     * The other direction from `/providers`: those are the identity providers the user signs in
+     * *with*, these are the OAuth clients holding access *to* the account.
+     */
+    get("/authorizations") {
+        val (actor, context) = call.heliumContext(dependencies)
+        val userId = when (actor) {
+            is Principal.UserSession -> actor.userId
+            is Principal.TokenBearer -> actor.userId
+            else -> {
+                call.respondProblem(AuthError.AuthenticationRequired)
+                return@get
+            }
+        }
+        call.respond(dependencies.authorizedApps.list(userId, context.now).map { it.toResponse() })
+    }
+
+    delete("/authorizations/{clientId}") {
+        if (!call.enforceCsrf(dependencies)) return@delete
+        // A blank id is answered like an unknown one, as with trusted devices: the flow already
+        // collapses "no such client", "not yours" and "already revoked" into NotFound, and a
+        // distinct 400 here would sort well-formed client ids from the rest before probing.
+        val clientId = call.parameters["clientId"]?.takeIf { it.isNotBlank() }?.let(::ClientId)
+        if (clientId == null) {
+            call.respondProblem(AuthError.NotFound)
+            return@delete
+        }
+        val (_, context) = call.heliumContext(dependencies)
+        val result = dependencies.flowRunner.execute(
+            flow = dependencies.authorizedAppFlows.revokeAuthorization,
+            command = RevokeAuthorizationCommand(clientId),
             context = context,
         )
         call.respondFlowNoContent(result)

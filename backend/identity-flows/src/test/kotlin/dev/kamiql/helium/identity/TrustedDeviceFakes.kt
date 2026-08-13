@@ -1,5 +1,6 @@
 package dev.kamiql.helium.identity
 
+import dev.kamiql.helium.domain.common.ClientId
 import dev.kamiql.helium.domain.common.EmailAddress
 import dev.kamiql.helium.domain.common.MfaFactorId
 import dev.kamiql.helium.domain.common.Normalization
@@ -41,6 +42,7 @@ import dev.kamiql.helium.domain.repository.TrustedDeviceRepository
 import dev.kamiql.helium.domain.repository.UserQuery
 import dev.kamiql.helium.domain.repository.UserRepository
 import dev.kamiql.helium.domain.repository.VerificationTokenRepository
+import dev.kamiql.helium.domain.session.AuthenticationMethod
 import dev.kamiql.helium.domain.session.Session
 import dev.kamiql.helium.domain.session.SessionRevocationReason
 import dev.kamiql.helium.domain.session.TrustedDevice
@@ -190,14 +192,40 @@ internal class InMemorySessionRepository : SessionRepository {
         session.also { stored += it }
 
     override suspend fun touch(id: SessionId, now: Instant, idleExpiresAt: Instant) = unused()
-    override suspend fun revoke(id: SessionId, at: Instant, reason: SessionRevocationReason): Boolean = unused()
+
+    override suspend fun revoke(id: SessionId, at: Instant, reason: SessionRevocationReason): Boolean =
+        revokeWhere(at) { it.id == id } > 0
 
     override suspend fun revokeAllForUser(
         userId: UserId,
         at: Instant,
         reason: SessionRevocationReason,
         except: SessionId?,
-    ): Int = unused()
+    ): Int = revokeWhere(at) { it.userId == userId && it.id != except }
+
+    /** Only ever revokes rows that are still live, as the conditional UPDATE in Postgres does. */
+    private fun revokeWhere(at: Instant, matches: (Session) -> Boolean): Int {
+        var revoked = 0
+        stored.replaceAll { session ->
+            if (session.revokedAt != null || !matches(session)) session
+            else session.copy(revokedAt = at).also { revoked++ }
+        }
+        return revoked
+    }
+
+    /** Merges rather than replaces, and skips revoked rows, exactly as the SQL does. */
+    override suspend fun markAuthenticated(
+        id: SessionId,
+        at: Instant,
+        methods: Set<AuthenticationMethod>,
+    ): Boolean {
+        val index = stored.indexOfFirst { it.id == id && it.revokedAt == null }
+        if (index < 0) return false
+        stored[index] = stored[index].let {
+            it.copy(authenticatedAt = at, authenticationMethods = it.authenticationMethods + methods)
+        }
+        return true
+    }
 
     override suspend fun deleteExpired(before: Instant): Int = unused()
 }
@@ -363,6 +391,9 @@ internal class UnusedRefreshTokenRepository : RefreshTokenRepository {
     override suspend fun revokeFamily(familyId: RefreshTokenFamilyId, at: Instant, reuseDetected: Boolean): Int = unused()
     override suspend fun revokeFamiliesForUser(userId: UserId, at: Instant): Int = unused()
     override suspend fun revokeFamiliesForSession(sessionId: SessionId, at: Instant): Int = unused()
+    override suspend fun listActiveFamiliesForUser(userId: UserId, now: Instant): List<RefreshTokenFamily> = unused()
+    override suspend fun revokeFamiliesForUserAndClient(userId: UserId, clientId: ClientId, at: Instant): Int =
+        unused()
     override suspend fun deleteExpired(before: Instant): Int = unused()
 }
 
@@ -653,6 +684,70 @@ internal class TrustedDeviceFixture(lifetimes: Lifetimes = Lifetimes.DEFAULT) {
         flows.beginMfaChallenge,
         BeginMfaChallengeCommand(transactionId, method),
         context(now),
+    )
+
+    /**
+     * The same request, made by somebody who is already signed in.
+     *
+     * Step-up flows read the session out of the principal rather than out of the command, so a
+     * test for them cannot use the anonymous [context] the login tests share.
+     */
+    fun sessionContext(
+        userId: UserId,
+        sessionId: SessionId,
+        now: Instant = T0,
+        methods: Set<AuthenticationMethod> = setOf(AuthenticationMethod.PASSWORD),
+    ): FlowContext = context(now).copy(
+        actor = Principal.UserSession(
+            userId = userId,
+            sessionId = sessionId,
+            permissions = setOf(Permission.ACCOUNT_SESSION_MANAGE),
+            roles = emptySet(),
+            authenticationMethods = methods,
+            emailVerified = true,
+        ),
+    )
+
+    /**
+     * Signs [name] in all the way and hands back the session that resulted.
+     *
+     * Goes through the real flows rather than inserting a row, so the session under test carries
+     * the `authenticatedAt` and `amr` a genuine sign-in leaves behind.
+     */
+    suspend fun signIn(name: String, now: Instant = T0): Session =
+        when (val first = login(name, now = now)) {
+            is FlowResult.Success -> first.value.session.session
+            is FlowResult.Challenge -> assertIs<FlowResult.Success<LoginSucceeded>>(
+                completeMfa(first.transactionId, rememberDevice = false, now = now),
+            ).value.session.session
+
+            is FlowResult.Failure -> error("sign-in for '$name' failed: ${first.error}")
+        }
+
+    suspend fun reauthenticate(
+        session: Session,
+        password: String = PASSWORD,
+        now: Instant = T0,
+    ): FlowResult<Unit> = runner.execute(
+        flows.reauthenticate,
+        ReauthenticateCommand(Secret.of(password)),
+        sessionContext(session.userId, session.id, now, session.authenticationMethods),
+    )
+
+    /** A step-up attempted by somebody with no session at all. */
+    suspend fun reauthenticateAnonymously(now: Instant = T0): FlowResult<Unit> =
+        runner.execute(flows.reauthenticate, ReauthenticateCommand(Secret.of(PASSWORD)), context(now))
+
+    suspend fun completeReauthentication(
+        session: Session,
+        transactionId: TransactionId,
+        now: Instant = T0,
+        method: MfaType = MfaType.TOTP,
+        response: MfaResponse = MfaResponse.Code(Secret.of(TOTP_CODE)),
+    ): FlowResult<Unit> = runner.execute(
+        flows.completeReauthentication,
+        CompleteReauthenticationCommand(transactionId, method, response),
+        sessionContext(session.userId, session.id, now, session.authenticationMethods),
     )
 
     /** Writes an active passkey factor straight to the table, bypassing enrollment. */

@@ -17,6 +17,8 @@ import dev.kamiql.helium.flow.FlowContext
 import dev.kamiql.helium.flow.FlowResult
 import dev.kamiql.helium.flow.FlowRunner
 import dev.kamiql.helium.identity.AdminFlows
+import dev.kamiql.helium.identity.AuthorizedAppFlows
+import dev.kamiql.helium.identity.AuthorizedAppService
 import dev.kamiql.helium.identity.IdentityFlows
 import dev.kamiql.helium.identity.MfaFlows
 import dev.kamiql.helium.identity.PasswordPolicyService
@@ -28,10 +30,12 @@ import dev.kamiql.helium.oauth.SigningKeyService
 import dev.kamiql.helium.oauth.TokenIssuer
 import dev.kamiql.helium.spi.ProviderRegistry
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.route
+import io.ktor.server.routing.routing
 
 /**
  * Everything the HTTP layer needs, gathered once.
@@ -72,12 +76,37 @@ class HeliumApiDependencies(
      */
     val trustedDevices: TrustedDeviceService,
 
+    /**
+     * Read side of "which applications hold access to my account".
+     *
+     * Split the same way trusted devices are: the listing needs no requirement beyond a signed-in
+     * caller and is scoped by the query itself, while the revocation changes a security posture
+     * and therefore runs as a flow that leaves an audit row.
+     */
+    val authorizedApps: AuthorizedAppService,
+    val authorizedAppFlows: AuthorizedAppFlows,
+
     val tokenIssuer: TokenIssuer,
     val signingKeys: SigningKeyService,
     val passwordPolicy: PasswordPolicyService,
     val providers: ProviderRegistry,
     val auditQuery: AuditQueryPort,
 )
+
+/**
+ * The scrape side of the metrics registry.
+ *
+ * Declared here for the same reason as [AuditQueryPort]: the endpoint is an HTTP concern and
+ * belongs to this module, while *which* registry backs it is an infrastructure choice the
+ * composition root makes. Keeping it a one-method port means `api-http` never sees Micrometer.
+ */
+interface MetricsEndpoint {
+    /** The registry's current state, already in the exposition format [contentType] names. */
+    fun scrape(): String
+
+    /** Prometheus text exposition by default; a different registry may answer otherwise. */
+    val contentType: String get() = "text/plain; version=0.0.4; charset=utf-8"
+}
 
 /**
  * Read side of the audit log, declared here so `api-http` does not depend on the persistence
@@ -90,6 +119,31 @@ interface AuditQueryPort {
         limit: Int,
         offset: Long,
     ): dev.kamiql.helium.domain.repository.Page<AuditRecordResponse>
+}
+
+/**
+ * Installs the whole HTTP surface: plugins, health probes and every route.
+ *
+ * One assembly point, called both by the composition root in `app` and by the route-inventory
+ * test. That is the point of it being here rather than in `app`: a test that assembled the
+ * application itself would be certifying a tree that only the test serves, and the two would
+ * drift apart exactly when a route was added — which is the drift the inventory exists to catch.
+ *
+ * @param readiness backs `/health/ready`; the composition root passes a cheap database probe.
+ * @param metrics backs `/metrics`. Always served on the application port — restricting who may
+ *        reach it is the edge's job, and both Caddyfiles do exactly that (concept §7.5: scrape
+ *        counters leak login volumes, failure rates and client identifiers).
+ */
+fun Application.installHeliumApi(
+    security: HttpSecurityConfig,
+    dependencies: HeliumApiDependencies,
+    metrics: MetricsEndpoint,
+    readiness: suspend () -> Boolean,
+) {
+    installHeliumPlugins(security)
+    installHealthRoutes(readiness)
+    installMetricsRoute(metrics)
+    routing { heliumRoutes(dependencies) }
 }
 
 /**

@@ -113,10 +113,26 @@ is still the password.
 Recovery codes remain a shared secret and remain phishable; a deployment that wants the phishing
 resistance end to end has to be willing to make account recovery an administrative action.
 
-**Session fixation.** A session identifier is never carried across an authentication state change.
-Login issues a brand-new session; MFA completion, password change and step-up reauthentication each
-rotate it. The pre-authentication MFA transaction is a separate one-time object with its own short
-TTL and is consumed on use, so a handle observed before authentication is worthless after it.
+**Session fixation.** A session identifier is never carried across the transition from anonymous
+to authenticated. Login issues a brand-new session, and so does MFA completion; the CSRF token is
+reissued with it, so a value captured before sign-in is worthless after. The pre-authentication MFA
+transaction is a separate one-time object with its own short TTL and is consumed on use.
+
+Two operations deliberately keep the session they were called on, and neither is a fixation:
+
+* **Step-up reauthentication** (`POST /v1/auth/reauthenticate`) refreshes `authenticatedAt` on the
+  caller's existing session rather than issuing a second one. There is no anonymous-to-authenticated
+  transition to exploit — the flow declares `Authenticated` and reads the subject from the principal,
+  never from the request — so the identifier an attacker would have to plant is a cookie for an
+  account they already hold. Issuing a new session here was the previous behaviour and was worse
+  than useless: the prompt fires on every sensitive confirmation, so the account's device list —
+  the control by which a user spots a session that should not be there — filled up with
+  unrecognisable entries from the browser they were sitting at. The step-up handle is bound to one
+  session *and* one user, is a distinct transaction kind from the sign-in handle, and so cannot be
+  spent at `/v1/auth/mfa/verify` to mint a session.
+* **Password change** revokes every other session for the account and keeps the caller's, so that
+  changing a password does not sign the user out of the tab they changed it in. Refresh-token
+  families and trusted devices are revoked without exception.
 
 **Provider-linking takeover.** The classic attack: register at an external IdP with the victim's
 email address, sign in, and get silently linked to their account. HeliumID never links by email —
@@ -262,6 +278,30 @@ Four properties bound the loss:
 Residual risk, stated plainly: an attacker with both the password and the unlocked machine gets in
 without the second factor, for up to the configured window. That is the trade being made. Where it
 is unacceptable, set `HELIUM_TRUSTED_DEVICE_DAYS=0`.
+
+**Standing consent the owner cannot see.** A consent is durable: once granted, later authorization
+requests for the same scopes skip the consent screen entirely. A grant nobody can enumerate is a
+grant nobody can withdraw, so `GET /v1/me/authorizations` lists every client with a live consent or
+an unexpired refresh-token family, and `DELETE /v1/me/authorizations/{clientId}` withdraws both
+halves at once. Both are required: dropping the consent alone leaves the client's refresh tokens
+minting access tokens, and killing the tokens alone lets the next authorization request pass the
+consent screen on the strength of the standing approval.
+
+The listing is deliberately built from token families as well as consents. A first-party client
+registered with `skip_consent` never produces a consent row and would otherwise be invisible while
+holding full access — the one case where an honest answer requires looking past the consent table.
+
+Two properties bound what revocation achieves. Already-issued **access tokens stay valid until they
+expire**: they are short-lived JWTs and no `jti` is recorded per issue, so there is nothing to
+revoke them by short of a per-issue table on the token hot path. The window is the access-token
+lifetime and the trade is deliberate. And revocation is available to any principal holding
+`account:session:manage`, **including a bearer token**, because `PrincipalResolver` gives
+`Principal.TokenBearer` the user's full role permissions rather than the intersection with the
+token's scopes — the same property already governs `DELETE /v1/me/sessions/{id}`. Narrowing bearer
+permissions to granted scopes is a separate change, not one to smuggle in beside a new endpoint.
+
+Revoking something that was never granted, belongs to another user, or is already revoked all
+answer `404`, so the endpoint cannot be used to enumerate registered client ids.
 
 **Authorization-code replay.** Codes are one-time, short-lived, bound to the client and to the
 redirect URI, and consumed atomically by a conditional update — so two concurrent redemptions

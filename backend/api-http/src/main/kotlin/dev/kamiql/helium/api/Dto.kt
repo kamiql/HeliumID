@@ -14,6 +14,7 @@ import dev.kamiql.helium.domain.policy.Role
 import dev.kamiql.helium.domain.session.Session
 import dev.kamiql.helium.domain.session.TrustedDevice
 import dev.kamiql.helium.domain.user.User
+import dev.kamiql.helium.identity.AuthorizedApp
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -121,6 +122,16 @@ internal sealed interface MfaResponseResult {
     /** @param reason stable token for the `response` key of a validation problem. */
     data class Invalid(val reason: String) : MfaResponseResult
 }
+
+/**
+ * Step-up: the password, and nothing else.
+ *
+ * No identifier field, deliberately. Which account is being re-proved comes from the session
+ * cookie; accepting one from the body would turn the step-up endpoint into a second login route
+ * — able to authenticate somebody other than the person whose session is about to be refreshed.
+ */
+@Serializable
+data class ReauthenticateRequest(val password: String)
 
 @Serializable
 data class TokenRequestBody(val token: String)
@@ -270,6 +281,43 @@ fun ExternalIdentity.toResponse(): LinkedProviderResponse = LinkedProviderRespon
     email = providerEmail?.display,
     linkedAt = createdAt.toString(),
     lastLoginAt = lastLoginAt?.toString(),
+)
+
+@Serializable
+data class AuthorizedScopeResponse(
+    val name: String,
+    /** Catalogue text, the same sentence the consent screen showed. */
+    val description: String,
+)
+
+/**
+ * An application with access to the account, as the account UI sees it.
+ *
+ * No token material and no redirect URIs: this answers "who can reach my account and what did I
+ * agree to", and everything beyond that belongs to client administration.
+ */
+@Serializable
+data class AuthorizedAppResponse(
+    @SerialName("client_id") val clientId: String,
+    val name: String,
+    val scopes: List<AuthorizedScopeResponse>,
+    @SerialName("authorized_at") val authorizedAt: String,
+    /** `null` when the client currently holds no usable refresh token. */
+    @SerialName("last_authorized_at") val lastAuthorizedAt: String?,
+    /** Live refresh-token families. Zero means a standing consent with nothing active behind it. */
+    @SerialName("active_grants") val activeGrants: Int,
+    /** `false` marks a first-party client that was registered to skip the consent screen. */
+    val consented: Boolean,
+)
+
+fun AuthorizedApp.toResponse(): AuthorizedAppResponse = AuthorizedAppResponse(
+    clientId = clientId.value,
+    name = name,
+    scopes = scopes.map { AuthorizedScopeResponse(it.name, it.description) },
+    authorizedAt = authorizedAt.toString(),
+    lastAuthorizedAt = lastAuthorizedAt?.toString(),
+    activeGrants = activeGrants,
+    consented = consented,
 )
 
 @Serializable
@@ -648,7 +696,9 @@ data class DiscoveryResponse(
     @SerialName("jwks_uri") val jwksUri: String,
     @SerialName("revocation_endpoint") val revocationEndpoint: String,
     @SerialName("introspection_endpoint") val introspectionEndpoint: String,
-    @SerialName("end_session_endpoint") val endSessionEndpoint: String,
+    // Optional per OIDC Discovery §3, and omitted from the response when null because
+    // `explicitNulls = false`. HeliumID has no RP-initiated logout endpoint to name.
+    @SerialName("end_session_endpoint") val endSessionEndpoint: String? = null,
     @SerialName("scopes_supported") val scopesSupported: List<String>,
     @SerialName("response_types_supported") val responseTypesSupported: List<String>,
     @SerialName("grant_types_supported") val grantTypesSupported: List<String>,

@@ -25,6 +25,7 @@ import dev.kamiql.helium.domain.mfa.RecoveryCode
 import dev.kamiql.helium.domain.mfa.TotpFactor
 import dev.kamiql.helium.domain.mfa.WebAuthnCredential
 import dev.kamiql.helium.domain.policy.Role
+import dev.kamiql.helium.domain.session.AuthenticationMethod
 import dev.kamiql.helium.domain.session.Session
 import dev.kamiql.helium.domain.session.SessionRevocationReason
 import dev.kamiql.helium.domain.session.TrustedDevice
@@ -133,6 +134,27 @@ interface SessionRepository {
     suspend fun insert(session: Session, sessionHash: String): Session
     suspend fun touch(id: SessionId, now: Instant, idleExpiresAt: Instant)
     suspend fun revoke(id: SessionId, at: Instant, reason: SessionRevocationReason): Boolean
+
+    /**
+     * Moves the step-up clock forward on a session that is already live.
+     *
+     * This is what re-authentication does instead of signing in again. Issuing a second session
+     * for a browser that already has one would leave the account's device list filling up with
+     * entries nobody recognises, one per sensitive action confirmed — so the credential the user
+     * presents a second time refreshes `authenticatedAt` here and nothing else changes hands.
+     *
+     * @param methods merged into the session's recorded `amr` rather than replacing it. A second
+     *        presentation adds evidence about how this person proved themselves; it never
+     *        withdraws any, so a session that once cleared a passkey challenge must not be
+     *        downgraded to `pwd` by a later password-only step-up.
+     * @return `false` when no live session with that id exists. A revoked session must not be
+     *         resurrected by a step-up.
+     */
+    suspend fun markAuthenticated(
+        id: SessionId,
+        at: Instant,
+        methods: Set<AuthenticationMethod>,
+    ): Boolean
 
     /**
      * Revokes every active session for the user, optionally sparing one.
@@ -380,6 +402,26 @@ interface RefreshTokenRepository {
 
     suspend fun revokeFamiliesForUser(userId: UserId, at: Instant): Int
     suspend fun revokeFamiliesForSession(sessionId: SessionId, at: Instant): Int
+
+    /**
+     * Families that can still mint access tokens for this user, newest first.
+     *
+     * The read side of "which applications currently hold access to my account". Reuse-detected
+     * families are excluded along with revoked and expired ones: the family is dead either way,
+     * and listing it would invite the owner to revoke something that is already gone.
+     */
+    suspend fun listActiveFamiliesForUser(userId: UserId, now: Instant): List<RefreshTokenFamily>
+
+    /**
+     * Revokes every family this user has with one client.
+     *
+     * Scoped to [userId] rather than taking a family id, because the caller is the account owner
+     * saying "this application is done", not somebody who knows a family identifier.
+     *
+     * @return number of families revoked; `0` means the client held no live tokens.
+     */
+    suspend fun revokeFamiliesForUserAndClient(userId: UserId, clientId: ClientId, at: Instant): Int
+
     suspend fun deleteExpired(before: Instant): Int
 }
 

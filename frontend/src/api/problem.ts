@@ -84,8 +84,6 @@ export const ErrorCode = {
     WEBAUTHN_FAILED: "webauthn_failed",
 } as const
 
-export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode]
-
 /**
  * The single error type every API call rejects with.
  *

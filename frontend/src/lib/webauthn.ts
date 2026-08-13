@@ -72,11 +72,6 @@ export function webauthnUnavailable(): HeliumError | null {
     return null
 }
 
-/** Whether a passkey control should be offered at all. */
-export function isWebauthnAvailable(): boolean {
-    return webauthnUnavailable() === null
-}
-
 /**
  * Maps a ceremony rejection onto a stable code.
  *

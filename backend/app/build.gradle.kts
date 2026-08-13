@@ -35,4 +35,23 @@ dependencies {
     testImplementation(project(":test-support"))
     testImplementation(ktorLibs.server.testHost)
     testImplementation(ktorLibs.client.contentNegotiation)
+    // The end-to-end suite asks the routing tree what exists, using the same walk that generates
+    // `docs/api-routes.md`, so the coverage census and the document cannot disagree about the
+    // shape of a route.
+    testImplementation(testFixtures(project(":api-http")))
+    // Routes and DTOs are an `implementation` dependency of this module, which does not reach the
+    // test compile classpath. The suite posts real request bodies, so it needs them directly.
+    testImplementation(project(":api-http"))
+}
+
+/**
+ * Runs the whole end-to-end suite in one JVM, in a fixed class order.
+ *
+ * Both matter to the coverage census in `RouteCoverageTest`: it reads a counter every other test
+ * class writes to, so it has to share their JVM and run after them. The ordering itself is
+ * configured in `src/test/resources/junit-platform.properties`.
+ */
+tasks.named<Test>("integrationTest") {
+    forkEvery = 0
+    maxParallelForks = 1
 }

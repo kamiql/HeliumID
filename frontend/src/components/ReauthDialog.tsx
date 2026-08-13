@@ -13,25 +13,31 @@ import { useId, useState } from "react"
 import PasswordField from "./PasswordField.tsx"
 import ErrorAlert from "./ErrorAlert.tsx"
 import MFADialog from "./MFADialog.tsx"
-import { useAuthStore, type MfaChallenge } from "../stores/auth.store.ts"
+import { authApi } from "../api/auth.ts"
+import { readMfaChallenge, useAuthStore, type MfaChallenge } from "../stores/auth.store.ts"
 import { useReauthStore } from "../stores/reauth.store.ts"
 import { notify } from "../stores/notice.store.ts"
-import type { MfaSecondFactor } from "../api/types.ts"
+import { toHeliumError } from "../api/problem.ts"
+import type { MfaSecondFactor, MfaVerifyRequest } from "../api/types.ts"
 
 /**
  * Step-up prompt for operations that demand recent proof of identity.
  *
  * Sensitive operations (password and email changes, MFA management, every admin write) require
- * the session to have authenticated within a short window. Re-running the full sign-in — second
- * factor included — is what refreshes that window; a bare password check would be a weaker
- * bar than the original sign-in.
+ * the session to have authenticated within a short window, and this is what refreshes it —
+ * password first, second factor after, exactly as at sign-in, because a bare password check
+ * would be a weaker bar than the sign-in it is standing in for.
+ *
+ * What it does **not** do is sign in again. It used to: `POST /v1/auth/login` was the only thing
+ * that moved the freshness clock, so every confirmed deletion, password change and MFA edit
+ * minted another session, and the account's device list — whose entire job is to let somebody
+ * spot the session that should not be there — filled up with entries from this browser that the
+ * user had no way to recognise. `/v1/auth/reauthenticate` refreshes the session already in hand.
  */
 export default function ReauthDialog() {
     const open = useReauthStore((state) => state.open)
     const close = useReauthStore((state) => state.close)
     const user = useAuthStore((state) => state.user)
-    const login = useAuthStore((state) => state.login)
-    const completeMfa = useAuthStore((state) => state.completeMfa)
 
     const [password, setPassword] = useState("")
     const [challenge, setChallenge] = useState<MfaChallenge | null>(null)
@@ -65,16 +71,21 @@ export default function ReauthDialog() {
             setBusy(true)
             setError(null)
 
-            const pending = await login({ identifier: user.username, password })
+            await authApi.reauthenticate(password)
+            setPassword("")
+            finish()
+        } catch (caught) {
             setPassword("")
 
+            // `mfa_required` is the ordinary second half of a step-up, not a failure: the
+            // password bought a one-time handle and the factor is presented against that, so the
+            // password never has to be held across the challenge.
+            const pending = readMfaChallenge(caught)
             if (pending) {
                 setChallenge(pending)
                 return
             }
 
-            finish()
-        } catch (caught) {
             setError(caught)
         } finally {
             setBusy(false)
@@ -82,7 +93,23 @@ export default function ReauthDialog() {
     }
 
     const handleMfa = async (factor: MfaSecondFactor) => {
-        await completeMfa(challenge!.transactionId, factor)
+        const transactionId = challenge!.transactionId
+        // Built per method rather than spread from one object: the endpoint accepts exactly one
+        // of `code` and `webauthn`, and sending the other as `undefined` is not the same thing.
+        // No `remember_device` in either shape — trusting a device lowers the bar for future
+        // sign-ins, which is not a thing to grant from a confirmation prompt.
+        const request: MfaVerifyRequest =
+            factor.method === "webauthn"
+                ? { transaction_id: transactionId, method: factor.method, webauthn: factor.assertion }
+                : { transaction_id: transactionId, method: factor.method, code: factor.code }
+
+        try {
+            await authApi.completeReauthMfa(request)
+        } catch (caught) {
+            // Rethrown for MFADialog, which distinguishes an expired handle and a dismissed
+            // passkey prompt from a wrong code and reacts to each differently.
+            throw toHeliumError(caught)
+        }
         finish()
     }
 

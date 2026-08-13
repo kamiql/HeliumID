@@ -146,7 +146,9 @@ cd backend
 ```
 
 Container-backed suites are tagged `integration` and excluded from `build` on purpose, so the
-common loop stays fast and works offline.
+common loop stays fast and works offline. What each layer is for — and why a new route needs both
+a regenerated route inventory and an end-to-end test — is in
+[`docs/testing.md`](docs/testing.md).
 
 **Docker Desktop on Windows.** Testcontainers probes a fixed list of daemon endpoints and does
 not read the active Docker CLI context, and Docker Engine 29 rejects the older Engine API
@@ -169,6 +171,11 @@ Protocol endpoints sit at the root, where the specifications require them; the a
 versioned under `/v1`. Through the edge the account API is additionally reachable under `/api`
 (the prefix is stripped before proxying), while protocol paths are proxied verbatim — a discovery
 document advertising `/api/oauth2/authorize` would simply be wrong.
+
+The tables below are grouped for reading. The **authoritative** list is
+[`docs/api-routes.md`](docs/api-routes.md), which is generated from the Ktor routing tree rather
+than maintained by hand — these tables had drifted from the code before it existed, and a route
+that is registered but undocumented is a route nobody reviews.
 
 ### OAuth 2.0 / OpenID Connect
 
@@ -216,7 +223,8 @@ origins must be `https` outside loopback, and the process refuses to start other
 
 | Method | Path |
 | --- | --- |
-| `GET` | `/v1/me` |
+| `GET` / `PUT` | `/v1/me` |
+| `PUT` | `/v1/me/password` |
 | `POST` | `/v1/me/email-change`, `/v1/me/email-change/confirm` |
 | `POST` | `/v1/me/delete` |
 | `GET` / `DELETE` | `/v1/me/sessions`, `/v1/me/sessions/{sessionId}` |
@@ -225,7 +233,16 @@ origins must be `https` outside loopback, and the process refuses to start other
 | `POST` | `/v1/me/mfa/totp/enroll`, `/v1/me/mfa/totp/confirm`, `/v1/me/mfa/totp/disable` |
 | `POST` | `/v1/me/mfa/webauthn/enroll`, `/v1/me/mfa/webauthn/confirm`, `/v1/me/mfa/webauthn/remove` |
 | `POST` | `/v1/me/mfa/recovery-codes` |
-| `GET` | `/v1/me/providers` |
+| `GET` / `DELETE` | `/v1/me/providers`, `/v1/me/providers/{provider}` |
+| `GET` / `DELETE` | `/v1/me/authorizations`, `/v1/me/authorizations/{clientId}` |
+
+`/v1/me/providers` and `/v1/me/authorizations` point in opposite directions: the first lists the
+external identities you sign in *with*, the second the OAuth clients that hold access *to* your
+account. The second is assembled from stored consents *and* live refresh-token families, so a
+first-party client registered with `skip_consent` is listed too — it has access either way.
+Revoking drops the consent and kills every refresh-token family for that client; access tokens it
+already holds stay valid for the remainder of their short lifetime. Revoking something that was
+never granted, belongs to someone else, or is already gone all answer `404`.
 
 ### Administration
 
@@ -234,18 +251,27 @@ Every route requires an `admin:*` permission.
 | Method | Path |
 | --- | --- |
 | `GET` | `/v1/admin/users`, `/v1/admin/users/{userId}` |
+| `PUT` | `/v1/admin/users/{userId}/status`, `/v1/admin/users/{userId}/roles` |
 | `GET` | `/v1/admin/users/{userId}/sessions` |
 | `POST` | `/v1/admin/users/{userId}/revoke-sessions` |
 | `GET` | `/v1/admin/roles`, `/v1/admin/permissions`, `/v1/admin/scopes` |
+| `PUT` / `DELETE` | `/v1/admin/roles/{name}` |
+| `PUT` / `DELETE` | `/v1/admin/scopes/{name}` |
 | `GET` | `/v1/admin/clients`, `/v1/admin/clients/{clientId}` |
 | `POST` | `/v1/admin/clients`, `/v1/admin/clients/{clientId}/rotate-secret` |
+| `PATCH` / `DELETE` | `/v1/admin/clients/{clientId}` |
 | `GET` | `/v1/admin/audit` |
+
+Nearly every write here declares `ReauthenticatedWithin`, which a bearer principal can never
+satisfy — automating them means driving a browser session, as `examples/demo-app/Setup.kt` does.
+The exceptions are session revocation and scope CRUD.
 
 ### Operational
 
 | Method | Path | |
 | --- | --- | --- |
-| `GET` | `/health` | Liveness and readiness. Proxied in both environments. |
+| `GET` | `/health` | Liveness. Deliberately uninformative — a probe that names the failing dependency is a reconnaissance endpoint. |
+| `GET` | `/health/ready` | Readiness. `503` until the database answers. |
 | `GET` | `/metrics` | Prometheus. Through the edge in dev only — scrape counters leak login volumes, failure rates and client identifiers. |
 
 Errors follow RFC 9457 with stable machine-readable codes (concept §5.3–§5.5).
@@ -258,6 +284,9 @@ Errors follow RFC 9457 with stable machine-readable codes (concept §5.3–§5.5
   mitigation implemented for each, plus what is explicitly out of scope.
 * [`docs/operations.md`](docs/operations.md) — key rotation, migration policy, backups, the
   refresh-token-reuse runbook, and the metric and log field reference.
+* [`docs/testing.md`](docs/testing.md) — the four test layers, what belongs in each, and the
+  route-coverage ratchet.
+* [`docs/api-routes.md`](docs/api-routes.md) — every HTTP route, generated from the routing tree.
 * `CLAUDE.md` — the security invariants and architectural rules this codebase is held to.
 
 ## Configuration

@@ -73,9 +73,27 @@ export default function DashboardPage() {
     }
 
     // Nested routes such as /admin/users/:id keep their parent entry highlighted.
-    const isSelected = (path: string) =>
+    const matchesPath = (path: string) =>
         location.pathname === path ||
         (path !== "/" && location.pathname.startsWith(`${path}/`))
+
+    const navPaths = (components: DashboardComponent[]): string[] =>
+        components.flatMap((component) => {
+            if (!canAccess(component)) return []
+            return component.children ? navPaths(component.children) : [component.path]
+        })
+
+    // On /admin/users the prefix rule matches both /admin/users and the section index
+    // /admin, which left "Overview" highlighted alongside the entry the user actually
+    // opened. Only the most specific match counts as the current page.
+    const activePath = navPaths(DashboardComponents)
+        .filter(matchesPath)
+        .reduce<string | undefined>(
+            (best, path) => (best === undefined || path.length > best.length ? path : best),
+            undefined,
+        )
+
+    const isSelected = (path: string) => path === activePath
 
     const hasActiveChild = (component: DashboardComponent) =>
         component.children?.some(

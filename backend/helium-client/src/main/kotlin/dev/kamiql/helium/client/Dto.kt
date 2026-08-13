@@ -409,7 +409,14 @@ public data class DiscoveryResponse(
     @SerialName("jwks_uri") public val jwksUri: String,
     @SerialName("revocation_endpoint") public val revocationEndpoint: String,
     @SerialName("introspection_endpoint") public val introspectionEndpoint: String,
-    @SerialName("end_session_endpoint") public val endSessionEndpoint: String,
+    /**
+     * RP-initiated logout, if the authorization server offers one.
+     *
+     * Optional in OIDC Discovery §3 and nullable here for that reason — a server that omits it is
+     * conforming, and a required field would make the SDK fail to parse an entirely valid
+     * discovery document. HeliumID itself does not currently publish one.
+     */
+    @SerialName("end_session_endpoint") public val endSessionEndpoint: String? = null,
     @SerialName("scopes_supported") public val scopesSupported: List<String>,
     @SerialName("response_types_supported") public val responseTypesSupported: List<String>,
     @SerialName("grant_types_supported") public val grantTypesSupported: List<String>,

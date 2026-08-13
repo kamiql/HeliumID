@@ -102,4 +102,22 @@ class InMemoryRateLimiter(
     override suspend fun reset(key: RateLimitKey) {
         windows.remove("${key.dimension}:${key.value}")
     }
+
+    /**
+     * Forgets every window.
+     *
+     * A test seam, and deliberately not part of [RateLimiter]: no caller should be able to clear
+     * the limits of a running server, and the Redis implementation must not grow the same method
+     * — "delete every key under this prefix" against a shared instance is an outage waiting for
+     * a typo.
+     *
+     * The reason it exists: limiter state lives in this process, not in the database, so a suite
+     * that truncates between tests does *not* reset it. Every request from a test harness also
+     * carries the same loopback address, so the per-IP limits treat an entire run as one client
+     * — `RateLimit.REGISTRATION` is five per hour, and the sixth account a suite creates would
+     * silently fail to exist. Silently, because registration answers identically either way.
+     */
+    fun clear() {
+        windows.clear()
+    }
 }

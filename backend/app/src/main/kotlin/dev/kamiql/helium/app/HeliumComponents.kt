@@ -16,10 +16,11 @@ import dev.kamiql.helium.domain.credential.PasswordPolicy
 import dev.kamiql.helium.domain.crypto.HeliumClock
 import dev.kamiql.helium.domain.repository.Page
 import dev.kamiql.helium.flow.FlowRunner
-import dev.kamiql.helium.flow.port.MetricsPort
 import dev.kamiql.helium.flow.port.RateLimiter
 import dev.kamiql.helium.flow.port.SecurityTransactionStore
 import dev.kamiql.helium.identity.AdminFlows
+import dev.kamiql.helium.identity.AuthorizedAppFlows
+import dev.kamiql.helium.identity.AuthorizedAppService
 import dev.kamiql.helium.identity.IdentityFlows
 import dev.kamiql.helium.identity.MfaFlows
 import dev.kamiql.helium.identity.PasswordPolicyService
@@ -100,6 +101,15 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
     private val log = LoggerFactory.getLogger(HeliumComponents::class.java)
 
     val clock: HeliumClock = HeliumClock.SYSTEM
+
+    /**
+     * The metrics registry.
+     *
+     * Constructed first because the flow runner writes to it and `/metrics` reads from it, and
+     * both need the same instance — the counters in `docs/operations.md` §6 exist only because
+     * this is wired in rather than left as [MetricsPort.NoOp].
+     */
+    val metrics = HeliumMetrics()
 
     // --- infrastructure -------------------------------------------------------
 
@@ -195,7 +205,7 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         // decorator is the backstop for the one that forgets: WebAuthn pushes credential ids,
         // public keys, challenges and signatures through flow state as ordinary strings.
         audit = ScrubbedAuditPort(auditRepository),
-        metrics = MetricsPort.NoOp,
+        metrics = metrics,
     )
 
     val sessionService = SessionService(sessions, random, tokenHasher, config.lifetimes)
@@ -210,6 +220,8 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         transactionManager = transactionManager,
         outbox = outboxRepository,
     )
+
+    val authorizedAppService = AuthorizedAppService(consents, refreshTokens, clients)
 
     private val verificationTokenService =
         VerificationTokenService(verificationTokens, random, tokenHasher, config.lifetimes)
@@ -365,6 +377,8 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         lifetimes = config.lifetimes,
     )
 
+    val authorizedAppFlows = AuthorizedAppFlows(consents, refreshTokens)
+
     val oauthFlows = OAuthFlows(
         issuerUrl = config.issuerUrl,
         clients = clients,
@@ -463,6 +477,8 @@ class HeliumComponents(private val config: HeliumConfig) : AutoCloseable {
         mfaRepository = mfaRepository,
         authorizationCodes = authorizationCodes,
         trustedDevices = trustedDeviceService,
+        authorizedApps = authorizedAppService,
+        authorizedAppFlows = authorizedAppFlows,
         tokenIssuer = tokenIssuer,
         signingKeys = signingKeys,
         passwordPolicy = passwordPolicyService,

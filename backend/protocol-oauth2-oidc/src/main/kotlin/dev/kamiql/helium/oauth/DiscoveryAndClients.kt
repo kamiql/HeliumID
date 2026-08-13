@@ -44,7 +44,19 @@ data class DiscoveryMetadata(
     val jwksUri: String,
     val revocationEndpoint: String,
     val introspectionEndpoint: String,
-    val endSessionEndpoint: String,
+    /**
+     * RP-initiated logout, advertised only if it exists — which today it does not.
+     *
+     * This used to be published unconditionally as `{issuer}/oauth2/logout`, a path with no route
+     * behind it, so every relying party that read discovery and honoured it was pointed at a 404.
+     * An absent optional field is a correct discovery document (OIDC Discovery §3 makes this
+     * `OPTIONAL`); a present one naming a dead endpoint is not.
+     *
+     * Implementing it properly means `id_token_hint` validation, a per-client
+     * `post_logout_redirect_uri` allowlist and a migration to store it — a feature, not a repair,
+     * and tracked separately.
+     */
+    val endSessionEndpoint: String? = null,
     val scopesSupported: List<String>,
     val responseTypesSupported: List<String> = listOf("code"),
     val grantTypesSupported: List<String> = listOf("authorization_code", "refresh_token", "client_credentials"),
@@ -68,7 +80,6 @@ data class DiscoveryMetadata(
                 jwksUri = "$base/.well-known/jwks.json",
                 revocationEndpoint = "$base/oauth2/revoke",
                 introspectionEndpoint = "$base/oauth2/introspect",
-                endSessionEndpoint = "$base/oauth2/logout",
                 scopesSupported = scopes,
             )
         }

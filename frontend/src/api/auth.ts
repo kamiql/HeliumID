@@ -9,6 +9,7 @@ import type {
     PasswordRequirements,
     PasswordResetCompleteRequest,
     ProviderListResponse,
+    ReauthenticateRequest,
     RegisterRequest,
     SessionBootstrap,
     TokenRequestBody,
@@ -47,6 +48,23 @@ export const authApi = {
         api.post<MfaChallengeResponse>("/v1/auth/mfa/challenge", request),
 
     verifyMfa: (request: MfaVerifyRequest) => api.post<void>("/v1/auth/mfa/verify", request),
+
+    /**
+     * Step-up for the session the browser already has.
+     *
+     * Same two-phase shape as `/login` — `204`, or `mfa_required` with a handle — but it issues
+     * no session. That is why it exists: the dialog used to satisfy a step-up by calling
+     * [login], which minted a session every time somebody confirmed a sensitive action and left
+     * the account's device list unreadable.
+     *
+     * No identifier is sent: which account is being re-proved is the session's business.
+     */
+    reauthenticate: (password: string) =>
+        api.post<void>("/v1/auth/reauthenticate", { password } satisfies ReauthenticateRequest),
+
+    /** Answers the challenge from [reauthenticate]. Never carries `remember_device`. */
+    completeReauthMfa: (request: MfaVerifyRequest) =>
+        api.post<void>("/v1/auth/reauthenticate/mfa", request),
 
     logout: () => api.post<void>("/v1/auth/logout"),
 

@@ -136,6 +136,36 @@ class RefreshTokenRepositoryImpl(private val database: Database) : RefreshTokenR
         revokeFamilies(families, at)
     }
 
+    override suspend fun listActiveFamiliesForUser(
+        userId: UserId,
+        now: Instant,
+    ): List<RefreshTokenFamily> = dbQuery(database) {
+        RefreshTokenFamiliesTable.selectAll()
+            .where {
+                (RefreshTokenFamiliesTable.userId eq userId.value) and
+                    RefreshTokenFamiliesTable.revokedAt.isNull() and
+                    RefreshTokenFamiliesTable.reuseDetectedAt.isNull() and
+                    (RefreshTokenFamiliesTable.absoluteExpiresAt greater now.toDb())
+            }
+            .orderBy(RefreshTokenFamiliesTable.createdAt, SortOrder.DESC)
+            .map { it.toFamily() }
+    }
+
+    override suspend fun revokeFamiliesForUserAndClient(
+        userId: UserId,
+        clientId: ClientId,
+        at: Instant,
+    ): Int = dbQuery(database) {
+        val families = RefreshTokenFamiliesTable.select(RefreshTokenFamiliesTable.id)
+            .where {
+                (RefreshTokenFamiliesTable.userId eq userId.value) and
+                    (RefreshTokenFamiliesTable.clientId eq clientId.value) and
+                    RefreshTokenFamiliesTable.revokedAt.isNull()
+            }
+            .map { it[RefreshTokenFamiliesTable.id] }
+        revokeFamilies(families, at)
+    }
+
     private fun revokeFamilies(familyIds: List<java.util.UUID>, at: Instant): Int {
         if (familyIds.isEmpty()) return 0
         RefreshTokenFamiliesTable.update(where = { RefreshTokenFamiliesTable.id inList familyIds }) {

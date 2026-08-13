@@ -1,6 +1,7 @@
 import { api } from "./axios.ts"
 import type {
     AcceptedResponse,
+    AuthorizedApp,
     ChangePasswordRequest,
     DeleteAccountRequest,
     EmailChangeRequest,
@@ -100,4 +101,15 @@ export const accountApi = {
 
     unlinkProvider: (provider: string) =>
         api.delete<void>(`/v1/me/providers/${encodeURIComponent(provider)}`),
+
+    // --- authorized applications --------------------------------------------------
+
+    authorizations: () => api.get<AuthorizedApp[]>("/v1/me/authorizations"),
+
+    /**
+     * Drops the standing consent *and* kills the app's refresh tokens. Access tokens it already
+     * holds die with their own short lifetime; the next sign-in shows the consent screen again.
+     */
+    revokeAuthorization: (clientId: string) =>
+        api.delete<void>(`/v1/me/authorizations/${encodeURIComponent(clientId)}`),
 }

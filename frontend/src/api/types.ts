@@ -36,6 +36,17 @@ export type LoginRequest = {
     password: string
 }
 
+/**
+ * `POST /v1/auth/reauthenticate` — step-up for the session the browser already holds.
+ *
+ * No identifier, unlike [LoginRequest]: the account being re-proved is the one behind the
+ * session cookie, and letting the body name a different one would make this a login route that
+ * happens not to hand out a cookie.
+ */
+export type ReauthenticateRequest = {
+    password: string
+}
+
 export type MfaMethod = "totp" | "recovery_code" | "webauthn"
 
 /**
@@ -209,6 +220,31 @@ export type LinkedProvider = {
     email: string | null
     linked_at: string
     last_login_at: string | null
+}
+
+export type AuthorizedScope = {
+    name: string
+    /** Catalogue text — the same sentence the consent screen showed. */
+    description: string
+}
+
+/**
+ * An application holding access to the account.
+ *
+ * The other direction from {@link LinkedProvider}: those are what you sign in *with*, these are
+ * the OAuth clients that can reach your account.
+ */
+export type AuthorizedApp = {
+    client_id: string
+    name: string
+    scopes: AuthorizedScope[]
+    authorized_at: string
+    /** `null` when the app currently holds no usable refresh token. */
+    last_authorized_at: string | null
+    /** Live refresh-token families; zero means a standing consent with nothing active behind it. */
+    active_grants: number
+    /** `false` marks a first-party client registered to skip the consent screen. */
+    consented: boolean
 }
 
 export type MfaFactorStatus = "PENDING" | "ACTIVE" | "REVOKED"

@@ -1,14 +1,13 @@
 package dev.kamiql.helium.app
 
-import dev.kamiql.helium.api.heliumRoutes
-import dev.kamiql.helium.api.installHealthRoutes
-import dev.kamiql.helium.api.installHeliumPlugins
+import dev.kamiql.helium.api.installHeliumApi
 import dev.kamiql.helium.persistence.DatabaseConfig
 import dev.kamiql.helium.persistence.HeliumDatabase
 import io.ktor.server.application.Application
+import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.metrics.micrometer.MicrometerMetrics
 import io.ktor.server.netty.Netty
-import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -95,12 +94,18 @@ fun main() {
 
 /** Wires the Ktor application. Separate from [main] so tests can start it in-process. */
 fun Application.heliumModule(components: HeliumComponents, config: HeliumConfig) {
-    installHeliumPlugins(components.httpSecurity)
-    installHealthRoutes { components.isReady() }
-
-    routing {
-        heliumRoutes(components.apiDependencies)
+    // Request-level timings and counts, on the same registry the flow engine writes to. Installed
+    // here rather than inside `installHeliumApi` because choosing Micrometer is an infrastructure
+    // decision; it registers no routes, so the route inventory is unaffected.
+    install(MicrometerMetrics) {
+        registry = components.metrics.registry
     }
+
+    installHeliumApi(
+        security = components.httpSecurity,
+        dependencies = components.apiDependencies,
+        metrics = components.metrics,
+    ) { components.isReady() }
 
     log.info("HeliumID listening on port {}", config.port)
 }

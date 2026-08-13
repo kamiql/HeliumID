@@ -1,0 +1,9 @@
+# The OAuth client secret cached by run-demo.sh. A real credential — never commit it.
+.demo-secret
+
+# Build output of this standalone Gradle build.
+build/
+.gradle/
+.kotlin/
+
+demo-run.log

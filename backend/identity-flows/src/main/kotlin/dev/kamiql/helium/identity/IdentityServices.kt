@@ -116,26 +116,41 @@ class SessionService(
  *
  * Purely cosmetic. The user agent is attacker-supplied, so nothing may branch on this — it
  * exists so that "revoke the one that says iPhone" is a decision a person can make.
+ *
+ * `null` when the string says nothing recognisable, rather than a placeholder. The lists have to
+ * render *something* for a session whose user agent was absent altogether, so the wording of
+ * "we don't know" belongs to the UI and there should be exactly one of it — otherwise a reader
+ * comparing two entries has no way to tell "no user agent was sent" from "a user agent was sent
+ * and we could not place it", which look identical but mean different things.
+ *
+ * Order matters within each list: the specific must be tested before the general, since
+ * Android user agents also say Linux, and every Chromium browser also says both Chrome and
+ * Safari.
  */
-internal fun describeDevice(userAgent: String): String {
+internal fun describeDevice(userAgent: String): String? {
     val platform = when {
         userAgent.contains("Windows", ignoreCase = true) -> "Windows"
         userAgent.contains("Macintosh", ignoreCase = true) -> "macOS"
         userAgent.contains("iPhone", ignoreCase = true) -> "iPhone"
         userAgent.contains("iPad", ignoreCase = true) -> "iPad"
         userAgent.contains("Android", ignoreCase = true) -> "Android"
+        userAgent.contains("CrOS", ignoreCase = true) -> "ChromeOS"
         userAgent.contains("Linux", ignoreCase = true) -> "Linux"
-        else -> "Unknown device"
+        else -> null
     }
     val browser = when {
-        userAgent.contains("Edg/", ignoreCase = true) -> "Edge"
+        userAgent.contains("Edg", ignoreCase = true) -> "Edge"
         userAgent.contains("OPR/", ignoreCase = true) -> "Opera"
+        // iOS forces every browser onto WebKit, so the engine tokens say Safari whatever the app
+        // is. `CriOS`/`FxiOS` are the only thing that distinguishes them, and they come first.
+        userAgent.contains("CriOS", ignoreCase = true) -> "Chrome"
+        userAgent.contains("FxiOS", ignoreCase = true) -> "Firefox"
         userAgent.contains("Firefox", ignoreCase = true) -> "Firefox"
         userAgent.contains("Chrome", ignoreCase = true) -> "Chrome"
         userAgent.contains("Safari", ignoreCase = true) -> "Safari"
         else -> null
     }
-    return listOfNotNull(platform, browser).joinToString(" · ").take(128)
+    return listOfNotNull(platform, browser).joinToString(" · ").take(128).takeIf { it.isNotEmpty() }
 }
 
 /**

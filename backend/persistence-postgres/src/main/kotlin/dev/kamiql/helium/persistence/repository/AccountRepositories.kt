@@ -359,6 +359,30 @@ class SessionRepositoryImpl(private val database: Database) : SessionRepository 
         }
     }
 
+    override suspend fun markAuthenticated(
+        id: SessionId,
+        at: Instant,
+        methods: Set<AuthenticationMethod>,
+    ): Boolean = dbQuery(database) {
+        val live = (SessionsTable.id eq id.value) and SessionsTable.revokedAt.isNull()
+
+        // Read-modify-write rather than a single UPDATE, because `authentication_methods` is a
+        // CSV set and the merge cannot be expressed as an assignment. Safe here: `dbQuery` runs
+        // in a transaction, and the enclosing flow holds one too, so a concurrent step-up on the
+        // same row serialises behind this one instead of interleaving with it.
+        val current = SessionsTable.selectAll().where { live }.firstOrNull()
+            ?: return@dbQuery false
+
+        val merged = current[SessionsTable.authenticationMethods].fromCsv()
+            .mapNotNull { name -> runCatching { AuthenticationMethod.valueOf(name) }.getOrNull() }
+            .toSet() + methods
+
+        SessionsTable.update(where = { live }) { row ->
+            row[authenticatedAt] = at.toDb()
+            row[authenticationMethods] = merged.map { it.name }.toSet().toCsv()
+        } > 0
+    }
+
     override suspend fun revoke(id: SessionId, at: Instant, reason: SessionRevocationReason): Boolean =
         dbQuery(database) {
             // Only revoke rows that are still live, so a second logout is a no-op rather than

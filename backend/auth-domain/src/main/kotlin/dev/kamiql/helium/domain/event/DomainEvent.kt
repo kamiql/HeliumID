@@ -99,6 +99,27 @@ sealed interface DomainEvent {
         override val type = "auth.login-failed"
     }
 
+    /**
+     * A live session re-proved identity for a step-up operation.
+     *
+     * Kept apart from [LoginSucceeded] rather than folded into it, because the two answer
+     * different questions. A login says a session came into existence; this says an existing one
+     * was refreshed immediately before something account-takeover-sensitive happened. Reading a
+     * password change or an MFA removal in the audit log means reading the step-up that preceded
+     * it, and that row has to exist on its own.
+     *
+     * Notably *not* mailed to the user: unlike a sign-in from a new device, a step-up is
+     * something the account owner is doing right now in the tab in front of them.
+     */
+    data class Reauthenticated(
+        override val userId: UserId,
+        val sessionId: SessionId,
+        /** True when a second factor was presented, and not merely enrolled. */
+        val mfa: Boolean,
+    ) : DomainEvent {
+        override val type = "auth.reauthenticated"
+    }
+
     data class SessionRevoked(
         override val userId: UserId,
         val sessionId: SessionId?,
@@ -192,6 +213,22 @@ sealed interface DomainEvent {
         val clientId: ClientId,
     ) : DomainEvent {
         override val type = "token.refresh-reuse-detected"
+    }
+
+    /**
+     * The account owner cut an application off from their account.
+     *
+     * Worth a permanent record even though it removes access rather than granting it: it is the
+     * evidence that answers "why did this integration stop working", and a burst of these from
+     * one account is a plausible sign that somebody else is cleaning up after a takeover.
+     */
+    data class AuthorizationRevoked(
+        override val userId: UserId,
+        val clientId: ClientId,
+        /** Refresh-token families killed. Zero is ordinary — the client may hold no live tokens. */
+        val revokedGrants: Int,
+    ) : DomainEvent {
+        override val type = "oauth.authorization-revoked"
     }
 
     // --- clients ---------------------------------------------------------------

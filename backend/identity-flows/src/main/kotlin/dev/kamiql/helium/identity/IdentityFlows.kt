@@ -3,6 +3,7 @@ package dev.kamiql.helium.identity
 import dev.kamiql.helium.domain.common.EmailAddress
 import dev.kamiql.helium.domain.common.Normalization
 import dev.kamiql.helium.domain.common.Secret
+import dev.kamiql.helium.domain.common.SessionId
 import dev.kamiql.helium.domain.common.TransactionId
 import dev.kamiql.helium.domain.common.UserId
 import dev.kamiql.helium.domain.common.Username
@@ -14,6 +15,7 @@ import dev.kamiql.helium.domain.event.DomainEvent
 import dev.kamiql.helium.domain.event.VerificationPurpose
 import dev.kamiql.helium.domain.mfa.MfaPolicy
 import dev.kamiql.helium.domain.mfa.MfaType
+import dev.kamiql.helium.domain.mfa.MfaVerificationResult
 import dev.kamiql.helium.domain.mfa.WebAuthnAuthenticationOptions
 import dev.kamiql.helium.domain.policy.Lifetimes
 import dev.kamiql.helium.domain.policy.Permission
@@ -35,6 +37,7 @@ import dev.kamiql.helium.domain.user.UserStatus
 import dev.kamiql.helium.flow.ChallengeDescriptor
 import dev.kamiql.helium.flow.Flow
 import dev.kamiql.helium.flow.FlowId
+import dev.kamiql.helium.flow.FlowState
 import dev.kamiql.helium.flow.FlowStateKey
 import dev.kamiql.helium.flow.IdempotencyPolicy
 import dev.kamiql.helium.flow.StepResult
@@ -54,6 +57,7 @@ import dev.kamiql.helium.flow.step
 import dev.kamiql.helium.spi.MfaMethodRegistry
 import dev.kamiql.helium.spi.VerificationChallenge
 import org.slf4j.LoggerFactory
+import java.time.Instant
 
 /**
  * The local identity flows.
@@ -520,9 +524,16 @@ class IdentityFlows(
                 step("issue-challenge") { command, context, state ->
                     // peek, not take. See the flow comment: this is the single most important
                     // line in it.
+                    //
+                    // Either kind of handle is accepted: a sign-in challenge and a step-up
+                    // challenge need the same nonce for the same account, and this endpoint
+                    // hands out nothing that is worth anything without the answer that follows.
+                    // Which one it was still decides what completing it buys, and that is
+                    // enforced where the handle is spent — never here.
                     val payload = transactions.peek(command.transactionId, MFA_TRANSACTION_KIND)
+                        ?: transactions.peek(command.transactionId, REAUTH_TRANSACTION_KIND)
                         ?: return@step StepResult.Fail(AuthError.MfaExpired)
-                    val userId = UserId.parse(payload)
+                    val userId = userIdOf(payload)
                         ?: return@step StepResult.Fail(AuthError.MfaExpired)
 
                     // Absent and suspended accounts answer the same way an expired handle does.
@@ -611,11 +622,7 @@ class IdentityFlows(
             step(
                 step("issue-session") { command, context, state ->
                     val user = state.require(userKey)
-                    val secondFactor = when (command.method) {
-                        MfaType.TOTP -> AuthenticationMethod.TOTP
-                        MfaType.RECOVERY_CODE -> AuthenticationMethod.RECOVERY_CODE
-                        MfaType.WEBAUTHN -> AuthenticationMethod.PASSKEY
-                    }
+                    val secondFactor = amrOf(command.method)
                     state[newDeviceKey] =
                         sessionService.isNewDevice(user.id, context, context.now)
                     state[issuedSessionKey] = sessionService.issue(
@@ -693,6 +700,235 @@ class IdentityFlows(
                 )
             }
         }
+
+    // =========================================================================
+    // reauthentication (step-up)
+    // =========================================================================
+
+    /**
+     * Re-proves identity for the session the caller already has.
+     *
+     * ### Why this is not `login` a second time
+     *
+     * Freshness is measured from `Session.authenticatedAt`, and for a long time the only thing
+     * that moved it was signing in. That made the step-up prompt an alias for `POST /auth/login`,
+     * which mints a session — so confirming a deletion, then a password change, then an MFA
+     * change left three extra sessions behind, from one browser, in a list whose entire purpose
+     * is to let somebody spot the device that should not be there. A device list nobody can read
+     * is a security control that has been switched off. This flow moves the clock on the session
+     * the browser already holds and issues nothing.
+     *
+     * ### The bar
+     *
+     * A second factor is demanded whenever the account has one enrolled, with no trusted-device
+     * exemption. That exemption exists so a recognised machine can skip the challenge *at
+     * sign-in*; extending it to step-up would mean the operations guarded by step-up — changing
+     * the password, removing a factor, deleting the account — are reachable on a stolen session
+     * plus a password, from precisely the machine an attacker with both is most likely to be
+     * using. It is also the strictly safer direction of the two: every case this covers either
+     * matches what replaying login asked for, or asks for more.
+     */
+    val reauthenticate: Flow<ReauthenticateCommand, Unit> =
+        flow(FlowId("identity.reauthenticate")) {
+            transaction(TransactionPolicy.Required)
+            auditAs("auth.reauthenticated")
+
+            // Anonymous callers get `auth_required`, not a password prompt: there is no session
+            // to refresh, and accepting one here would make this a login endpoint after all.
+            require(Authenticated)
+            require(
+                RateLimited<ReauthenticateCommand>("reauth.ip", RateLimit.LOGIN_PER_IP, rateLimiter) { _, context ->
+                    context.ipAddress
+                },
+            )
+            // Keyed on the session rather than the account, because that is what the attempts are
+            // being spent against. Somebody holding a stolen cookie gets their own small budget
+            // and cannot exhaust the owner's by guessing from a second browser.
+            require(
+                RateLimited<ReauthenticateCommand>(
+                    "reauth.session", RateLimit.LOGIN_PER_ACCOUNT_AND_IP, rateLimiter,
+                ) { _, context ->
+                    (context.actor as? Principal.UserSession)?.sessionId?.value?.toString()
+                },
+            )
+
+            step(
+                step("verify-password") { command, context, state ->
+                    val actor = context.actor as? Principal.UserSession
+                        // A bearer token has no interactive session to refresh, which is the same
+                        // answer `ReauthenticatedWithin` gives such a caller.
+                        ?: return@step StepResult.Fail(AuthError.ReauthenticationRequired)
+
+                    val user = users.findById(actor.userId)
+                        ?: return@step StepResult.Fail(AuthError.AuthenticationRequired)
+                    user.toAccessError()?.let { return@step StepResult.Fail(it) }
+
+                    val credential = credentials.findByUserId(user.id)
+                    if (credential == null) {
+                        // Provider- or passkey-only account: there is no password to re-present.
+                        // Nothing is being enumerated here — the caller already knows whose
+                        // account this is — but the dummy keeps the timing of "wrong password"
+                        // and "no password" alike, so the shape of the account stays private.
+                        passwordHasher.verifyDummy(command.password)
+                        return@step StepResult.Fail(AuthError.InvalidCredentials)
+                    }
+                    if (!passwordHasher.verify(command.password, credential.hash)) {
+                        return@step StepResult.Fail(AuthError.InvalidCredentials)
+                    }
+
+                    state[userKey] = user
+                    state[sessionIdKey] = actor.sessionId
+                    StepResult.Continue
+                },
+            )
+
+            step(
+                step("enforce-second-factor") { _, context, state ->
+                    val user = state.require(userKey)
+                    val enrolled = mfaMethods.enrolledMethods(user.id)
+                    if (enrolled.isEmpty()) return@step StepResult.Continue
+
+                    val transactionId = TransactionId(random.token(24))
+                    transactions.put(
+                        id = transactionId,
+                        kind = REAUTH_TRANSACTION_KIND,
+                        payload = reauthPayload(user.id, state.require(sessionIdKey)),
+                        ttl = lifetimes.mfaTransaction,
+                    )
+                    StepResult.Challenge(
+                        ChallengeDescriptor(
+                            code = ChallengeDescriptor.MFA_REQUIRED,
+                            transactionId = transactionId,
+                            expiresAt = context.now.plus(lifetimes.mfaTransaction),
+                            methods = (enrolled + MfaType.RECOVERY_CODE).map { it.token }.toSet(),
+                        ),
+                    )
+                },
+            )
+
+            step(
+                step("refresh-session") { _, context, state ->
+                    refreshStepUpClock(state, context.now, setOf(AuthenticationMethod.PASSWORD))
+                },
+            )
+
+            effect(
+                effect("reauthenticated") { _, _, state ->
+                    listOf(
+                        DomainEvent.Reauthenticated(
+                            userId = state.require(userKey).id,
+                            sessionId = state.require(sessionIdKey),
+                            mfa = false,
+                        ),
+                    )
+                },
+            )
+
+            result { }
+        }
+
+    /**
+     * Answers the second factor a [reauthenticate] challenge asked for.
+     *
+     * Mirrors [completeMfa] except in what it produces: no session is issued, no trusted device
+     * is minted, and the handle is bound to one session rather than to an account.
+     */
+    val completeReauthentication: Flow<CompleteReauthenticationCommand, Unit> =
+        flow(FlowId("identity.reauthenticate.mfa")) {
+            transaction(TransactionPolicy.Required)
+            auditAs("auth.reauthenticated")
+
+            require(Authenticated)
+            require(
+                RateLimited<CompleteReauthenticationCommand>(
+                    "reauth.mfa", RateLimit.TOTP_VERIFY, rateLimiter,
+                ) { command, _ -> command.transactionId.value },
+            )
+
+            step(
+                step("verify-second-factor") { command, context, state ->
+                    val actor = context.actor as? Principal.UserSession
+                        ?: return@step StepResult.Fail(AuthError.ReauthenticationRequired)
+
+                    val payload = transactions.take(command.transactionId, REAUTH_TRANSACTION_KIND)
+                        ?: return@step StepResult.Fail(AuthError.MfaExpired)
+                    val handle = parseReauthPayload(payload)
+                        ?: return@step StepResult.Fail(AuthError.MfaExpired)
+
+                    // The handle is bound to the browser that asked for it, and both halves are
+                    // checked. Without the session half, a step-up begun in one session would
+                    // refresh the clock of another the same account happens to have open — which
+                    // is exactly the pair of sessions that exists during a takeover.
+                    if (handle.userId != actor.userId || handle.sessionId != actor.sessionId) {
+                        return@step StepResult.Fail(AuthError.MfaExpired)
+                    }
+
+                    val user = users.findById(handle.userId)
+                        ?: return@step StepResult.Fail(AuthError.AuthenticationRequired)
+                    user.toAccessError()?.let { return@step StepResult.Fail(it) }
+
+                    val method = mfaMethods[command.method]
+                        ?: return@step StepResult.Fail(AuthError.MfaInvalid)
+
+                    when (method.verify(handle.userId, command.response, context.now)) {
+                        is MfaVerificationResult.Verified -> Unit
+                        MfaVerificationResult.Expired -> return@step StepResult.Fail(AuthError.MfaExpired)
+                        // The handle was consumed above, so a wrong answer costs a restart from
+                        // the password — one guess per challenge, as at sign-in.
+                        MfaVerificationResult.Rejected -> return@step StepResult.Fail(AuthError.MfaInvalid)
+                    }
+
+                    state[userKey] = user
+                    state[sessionIdKey] = handle.sessionId
+                    state[mfaMethodKey] = command.method
+                    StepResult.Continue
+                },
+            )
+
+            step(
+                step("refresh-session") { _, context, state ->
+                    refreshStepUpClock(
+                        state = state,
+                        now = context.now,
+                        methods = setOf(
+                            AuthenticationMethod.PASSWORD,
+                            amrOf(state.require(mfaMethodKey)),
+                        ),
+                    )
+                },
+            )
+
+            effect(
+                effect("reauthenticated") { _, _, state ->
+                    listOf(
+                        DomainEvent.Reauthenticated(
+                            userId = state.require(userKey).id,
+                            sessionId = state.require(sessionIdKey),
+                            mfa = true,
+                        ),
+                    )
+                },
+            )
+
+            result { }
+        }
+
+    /**
+     * Moves `authenticatedAt` on the session the step-up was run for.
+     *
+     * A `false` from the repository means the session was revoked while the user was answering
+     * the prompt — from another device, or by an administrator. Reporting that as
+     * `AuthenticationRequired` rather than resurrecting the row is the point: a revocation that a
+     * step-up could undo is not a revocation.
+     */
+    private suspend fun refreshStepUpClock(
+        state: FlowState,
+        now: Instant,
+        methods: Set<AuthenticationMethod>,
+    ): StepResult {
+        val refreshed = sessions.markAuthenticated(state.require(sessionIdKey), now, methods)
+        return if (refreshed) StepResult.Continue else StepResult.Fail(AuthError.AuthenticationRequired)
+    }
 
     // =========================================================================
     // sessions
@@ -1279,6 +1515,9 @@ class IdentityFlows(
     private val duplicateKey = FlowStateKey<Boolean>("duplicate")
     private val mfaMethodKey = FlowStateKey<MfaType>("mfa_method")
 
+    /** The session a step-up is refreshing. Not sensitive: an id, not a credential. */
+    private val sessionIdKey = FlowStateKey<SessionId>("step_up_session")
+
     /** Sensitive: the options carry the single-use nonce the authenticator will sign. */
     private val webauthnOptionsKey =
         FlowStateKey<WebAuthnAuthenticationOptions>("webauthn_options", sensitive = true)
@@ -1286,5 +1525,42 @@ class IdentityFlows(
     companion object {
         /** Kind used for MFA handles in the security transaction store. */
         const val MFA_TRANSACTION_KIND: String = "mfa"
+
+        /**
+         * Kind used for step-up handles.
+         *
+         * A separate kind, not a flag on the payload. The store looks handles up *by* kind, so
+         * this is what makes a step-up handle unspendable at `/auth/mfa/verify`: presenting one
+         * there would otherwise mint a whole session out of a prompt the user answered to
+         * confirm a deletion.
+         */
+        const val REAUTH_TRANSACTION_KIND: String = "reauth"
+
+        /** `amr` value for a verified second factor. */
+        private fun amrOf(method: MfaType): AuthenticationMethod = when (method) {
+            MfaType.TOTP -> AuthenticationMethod.TOTP
+            MfaType.RECOVERY_CODE -> AuthenticationMethod.RECOVERY_CODE
+            MfaType.WEBAUTHN -> AuthenticationMethod.PASSKEY
+        }
+
+        /** Who the step-up is for, and which of their sessions. @see parseReauthPayload */
+        private data class ReauthHandle(val userId: UserId, val sessionId: SessionId)
+
+        private fun reauthPayload(userId: UserId, sessionId: SessionId): String =
+            "${userId.value}|${sessionId.value}"
+
+        private fun parseReauthPayload(payload: String): ReauthHandle? {
+            val userId = UserId.parse(payload.substringBefore('|')) ?: return null
+            val sessionId = SessionId.parse(payload.substringAfter('|', "")) ?: return null
+            return ReauthHandle(userId, sessionId)
+        }
+
+        /**
+         * The account a transaction handle belongs to, whichever kind it is.
+         *
+         * A sign-in handle is a bare user id and a step-up handle carries a session too; both
+         * start with the user id, which is all [beginMfaChallenge] needs to know.
+         */
+        private fun userIdOf(payload: String): UserId? = UserId.parse(payload.substringBefore('|'))
     }
 }

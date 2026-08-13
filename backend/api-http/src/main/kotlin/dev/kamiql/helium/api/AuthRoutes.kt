@@ -11,6 +11,8 @@ import dev.kamiql.helium.identity.BeginProviderAuthorizationCommand
 import dev.kamiql.helium.identity.CompleteMfaCommand
 import dev.kamiql.helium.identity.CompleteProviderCallbackCommand
 import dev.kamiql.helium.identity.CompletePasswordResetCommand
+import dev.kamiql.helium.identity.CompleteReauthenticationCommand
+import dev.kamiql.helium.identity.ReauthenticateCommand
 import dev.kamiql.helium.identity.LoginCommand
 import dev.kamiql.helium.identity.LogoutCommand
 import dev.kamiql.helium.identity.MfaChallengeStarted
@@ -188,6 +190,70 @@ fun Route.authRoutes(dependencies: HeliumApiDependencies) = route("/auth") {
             call.applyTrustedDevice(dependencies, success.trustedDevice, context.now)
             call.respond(HttpStatusCode.NoContent)
         }
+    }
+
+    /**
+     * Step-up for the session the browser already has.
+     *
+     * Answers `204` when the password alone is enough, and `mfa_required` with a one-time handle
+     * when the account has a second factor — the same two-phase shape as `/login`, and for the
+     * same reason: the password is not held across the challenge.
+     *
+     * Sets no cookie. That is the whole point of the endpoint existing: the UI used to satisfy a
+     * step-up by replaying `/login`, which issued a fresh session every time somebody confirmed
+     * a sensitive action, and buried the real devices in the account's session list.
+     */
+    post("/reauthenticate") {
+        if (!call.enforceCsrf(dependencies)) return@post
+        val body = call.receive<ReauthenticateRequest>()
+        val (_, context) = call.heliumContext(dependencies)
+
+        val result = dependencies.flowRunner.execute(
+            flow = dependencies.identityFlows.reauthenticate,
+            command = ReauthenticateCommand(Secret.of(body.password)),
+            context = context,
+        )
+        call.respondFlowNoContent(result)
+    }
+
+    /**
+     * Completes a step-up challenge.
+     *
+     * Separate from `/mfa/verify` because the two spend different handles and buy different
+     * things: that one issues a session, this one refreshes an existing one. A single endpoint
+     * would have to decide which by inspecting the handle, and the day it guessed wrong a
+     * confirmation prompt would mint a session.
+     */
+    post("/reauthenticate/mfa") {
+        if (!call.enforceCsrf(dependencies)) return@post
+        val body = call.receive<MfaVerifyRequest>()
+        val method = parseMfaType(body.method)
+        if (method == null) {
+            call.respondProblem(AuthError.ValidationFailed(mapOf("method" to "unsupported")))
+            return@post
+        }
+        val response = when (val read = body.readResponse(method)) {
+            is MfaResponseResult.Valid -> read.response
+            is MfaResponseResult.Invalid -> {
+                call.respondProblem(AuthError.ValidationFailed(mapOf("response" to read.reason)))
+                return@post
+            }
+        }
+        val (_, context) = call.heliumContext(dependencies)
+
+        val result = dependencies.flowRunner.execute(
+            flow = dependencies.identityFlows.completeReauthentication,
+            // `remember_device` is read off the wire by the shared DTO and dropped here on
+            // purpose: trusting a device lowers the bar for future sign-ins, and a step-up
+            // prompt must not be a place to grant that.
+            command = CompleteReauthenticationCommand(
+                transactionId = TransactionId(body.transactionId),
+                method = method,
+                response = response,
+            ),
+            context = context,
+        )
+        call.respondFlowNoContent(result)
     }
 
     post("/logout") {

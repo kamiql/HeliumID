@@ -1,5 +1,8 @@
 plugins {
     alias(libs.plugins.kotlin.serialization)
+    // The route enumerator is shared: `api-http` uses it to hold `docs/api-routes.md` to the
+    // routing tree, and `app` uses the same walk to drive the end-to-end coverage census.
+    `java-test-fixtures`
 }
 
 dependencies {
@@ -26,5 +29,17 @@ dependencies {
     implementation(ktorLibs.serialization.kotlinx.json)
     implementation(rootProject.libs.kotlinx.serialization.json)
 
+    testFixturesImplementation(ktorLibs.server.core)
+
     testImplementation(ktorLibs.server.testHost)
+    testImplementation(testFixtures(project(":api-http")))
+}
+
+// `-D` on the Gradle command line reaches the daemon, not the forked test JVM. RouteInventoryTest
+// regenerates `docs/api-routes.md` when this is set, so it has to be forwarded explicitly.
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "helium.routes.write",
+        providers.systemProperty("helium.routes.write").getOrElse("false"),
+    )
 }

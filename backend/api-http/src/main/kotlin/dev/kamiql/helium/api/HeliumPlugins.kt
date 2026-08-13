@@ -45,8 +45,12 @@ fun Application.installHeliumPlugins(config: HttpSecurityConfig) {
     install(CallLogging) {
         level = Level.INFO
         callIdMdc("request_id")
-        // Health and metrics would otherwise dominate the log volume.
-        filter { call -> !call.request.local.uri.startsWith("/health") }
+        // Health and metrics would otherwise dominate the log volume. Both are polled on a
+        // fixed interval by infrastructure, so every line they produce is noise.
+        filter { call ->
+            val uri = call.request.local.uri
+            !uri.startsWith("/health") && !uri.startsWith("/metrics")
+        }
         format { call ->
             // Deliberately minimal and structured. Concept §7.5: no cookies, no tokens, no
             // query strings — an authorization code or a reset token lives in a query string.
@@ -163,6 +167,23 @@ fun Application.installHealthRoutes(readiness: suspend () -> Boolean) {
             } else {
                 call.respondText("not ready", ContentType.Text.Plain, HttpStatusCode.ServiceUnavailable)
             }
+        }
+    }
+}
+
+/**
+ * Prometheus scrape endpoint.
+ *
+ * Unauthenticated, like `/health`, and for the same reason it is *not* harmless: the counters
+ * name login volumes, failure rates and client ids. Exposure is controlled at the edge —
+ * `infra/Caddyfile.dev` proxies it, `infra/Caddyfile.prod` does not — because an authentication
+ * scheme here would have to be one more credential to rotate, and the scraper already lives on
+ * the internal network.
+ */
+fun Application.installMetricsRoute(metrics: MetricsEndpoint) {
+    routing {
+        get("/metrics") {
+            call.respondText(metrics.scrape(), ContentType.parse(metrics.contentType))
         }
     }
 }

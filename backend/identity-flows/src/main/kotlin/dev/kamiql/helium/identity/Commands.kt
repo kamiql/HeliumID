@@ -1,5 +1,6 @@
 package dev.kamiql.helium.identity
 
+import dev.kamiql.helium.domain.common.ClientId
 import dev.kamiql.helium.domain.common.MfaFactorId
 import dev.kamiql.helium.domain.common.Secret
 import dev.kamiql.helium.domain.common.SessionId
@@ -129,6 +130,29 @@ data class CompleteMfaCommand(
     val rememberDevice: Boolean = false,
 )
 
+/**
+ * Re-proves identity for the session the caller already holds.
+ *
+ * Deliberately not a second [LoginCommand]. Signing in again mints a session, and the step-up
+ * prompt fires on every sensitive confirmation — so replaying login turns a handful of ordinary
+ * actions into a device list full of sessions the user never knowingly started. This refreshes
+ * the existing one instead; no cookie is issued and no identifier is accepted, because which
+ * account is being re-proved is settled by the session, not by the request body.
+ */
+data class ReauthenticateCommand(val password: Secret)
+
+/**
+ * Answers the second-factor challenge raised by a [ReauthenticateCommand].
+ *
+ * No `rememberDevice` counterpart to [CompleteMfaCommand]: the trusted-device exemption lowers
+ * the bar for future *sign-ins*, and a step-up prompt is not the place to grant it.
+ */
+data class CompleteReauthenticationCommand(
+    val transactionId: TransactionId,
+    val method: MfaType,
+    val response: MfaResponse,
+)
+
 data class LogoutCommand(val sessionId: SessionId)
 
 data class RevokeSessionCommand(val sessionId: SessionId)
@@ -240,6 +264,11 @@ data class RecoveryCodesGenerated(val codes: List<String>)
 // --- provider linking ---------------------------------------------------------
 
 data class UnlinkProviderCommand(val provider: ProviderKey)
+
+// --- authorized applications ------------------------------------------------------
+
+/** Cuts one OAuth client off from the caller's account. */
+data class RevokeAuthorizationCommand(val clientId: ClientId)
 
 // --- administration -------------------------------------------------------------
 

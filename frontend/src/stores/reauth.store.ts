@@ -8,10 +8,10 @@ type ReauthState = {
 }
 
 /**
- * There is no dedicated "re-authenticate" endpoint: freshness is measured from the session's
- * `authenticatedAt`, and the only thing that moves it is signing in again. The dialog therefore
- * replays `POST /v1/auth/login` — including its MFA challenge — rather than inventing a
- * weaker password-confirmation route.
+ * Freshness is measured from the session's `authenticatedAt`, and `POST /v1/auth/reauthenticate`
+ * is what moves it — password first, second factor after, the same bar as signing in but without
+ * a session coming out of it. Replaying `/login` here, which is what this used to do, minted one
+ * per confirmation and made the account's device list unreadable.
  */
 export const useReauthStore = create<ReauthState>((set) => ({
     open: false,

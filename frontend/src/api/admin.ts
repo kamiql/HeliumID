@@ -67,9 +67,6 @@ export const adminApi = {
     clients: (limit = 50, offset = 0) =>
         api.get<Page<OAuthClient>>("/v1/admin/clients", { params: { limit, offset } }),
 
-    client: (clientId: string) =>
-        api.get<OAuthClient>(`/v1/admin/clients/${encodeURIComponent(clientId)}`),
-
     scopes: () => api.get<Scope[]>("/v1/admin/scopes"),
 
     /** `201` with the plaintext secret. This is the only response that will ever contain it. */

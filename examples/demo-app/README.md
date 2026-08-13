@@ -13,35 +13,59 @@ application would. Open this directory as its own IntelliJ project.
 ## Running it
 
 **Prerequisites**: a JDK 25 toolchain (the published SDK records `org.gradle.jvm.version = 25`,
-and a lower toolchain fails at variant resolution with a confusing message), and the HeliumID dev
-stack up.
+and a lower toolchain fails at variant resolution with a confusing message), Docker, and `curl`.
 
 ```bash
-# 1. Start HeliumID
-cd ../..
-cp .env.dev.example .env.dev
-docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
-
-# 2. Publish the SDK
-cd backend
-./gradlew :helium-client:publishToMavenLocal
-
-# 3. Register this app's scopes and OAuth client
-cd ../examples/demo-app
-./gradlew setup
+./run-demo.sh
 ```
 
-`setup` prints a client secret **once**. Export it and start the app:
+That is the whole thing. It starts the HeliumID dev stack if it is not already up, publishes the
+SDK to `mavenLocal` if it is missing, registers the scopes and OAuth client if they do not exist,
+and then runs the application in the foreground. Every step is skipped when it is already done, so
+re-running it is cheap and safe.
+
+Then open <http://localhost:8081> and sign in. The bootstrap administrator from `.env.dev.example`
+is `admin` / `dev-only-change-me`; register a second account through HeliumID to try sharing and
+the non-admin view.
+
+| Flag | |
+| --- | --- |
+| `--reset` | delete and re-register the OAuth client first |
+| `--no-stack` | never touch Docker; fail if HeliumID is not already reachable |
+| `--republish` | force `publishToMavenLocal` even when the SDK is present |
+| `--setup-only` | do everything except starting the application |
+
+### Doing it by hand
 
 ```bash
+cd ../.. && cp .env.dev.example .env.dev
+docker compose --env-file .env.dev -f docker-compose.dev.yml up --build
+cd backend && ./gradlew :helium-client:publishToMavenLocal
+cd ../examples/demo-app && ./gradlew setup     # prints the client secret, once
+
 export DEMO_CLIENT_SECRET="…"        # bash
 $env:DEMO_CLIENT_SECRET="…"          # PowerShell
 ./gradlew run
 ```
 
-Then open <http://localhost:8081> and sign in. The bootstrap administrator from `.env.dev.example`
-is `admin` / `dev-only-change-me`; register a second account through HeliumID to try sharing and
-the non-admin view.
+### How the script keeps the secret
+
+HeliumID shows a client secret exactly once, at registration, and will not read it back. The
+script caches it in `.demo-secret` (gitignored, `chmod 600`) and validates it on every run by
+presenting a deliberately bogus refresh token at the token endpoint: client authentication is
+checked before the grant is, so `invalid_grant` means the secret was accepted and `invalid_client`
+means it was not. That is the only read-back HeliumID offers, and it costs no sign-in.
+
+When the cache is stale — a reset database, a secret rotated elsewhere, a deleted file — the
+script recovers by rotating the secret rather than failing. An explicitly exported
+`DEMO_CLIENT_SECRET` is treated as an instruction instead: if it does not work the script says so
+and stops, rather than quietly rotating a credential you chose.
+
+**Sign-ins are rate-limited to 5 per account per 10 minutes**, so the script spends at most one
+per run. It works out whether the client already exists by reading the status code of an
+unauthenticated `GET /oauth2/authorize` (302 registered · 400 wrong redirect URI · 403 no such
+client), which costs nothing, and only then decides between registering and rotating. `--reset`
+is the exception and spends two: one to delete, one to register.
 
 ### Configuration
 
@@ -51,7 +75,7 @@ the non-admin view.
 | `DEMO_BASE_URL` | `http://localhost:8081` | Redirect URI is `$DEMO_BASE_URL/callback` |
 | `DEMO_PORT` | `8081` | |
 | `DEMO_CLIENT_ID` | `helium-demo` | |
-| `DEMO_CLIENT_SECRET` | — | Required. Printed once by `setup` |
+| `DEMO_CLIENT_SECRET` | — | Required. Minted once by `setup`; `run-demo.sh` caches it in `.demo-secret` |
 | `DEMO_AUDIENCE` | `helium-demo-api` | The `aud` of access tokens, and what this app's API validates |
 | `HELIUM_ADMIN_USERNAME` / `HELIUM_ADMIN_PASSWORD` | `admin` / `dev-only-change-me` | `setup` only |
 

@@ -70,7 +70,15 @@ class SigningKeyService(
      * verifiers have had time to refresh their JWKS cache.
      */
     suspend fun generate(now: Instant): SigningKey {
-        val kid = SigningKeyId("auth-signing-key-${KID_FORMAT.format(now)}-${now.epochSecond}")
+        // The random suffix is load-bearing, not decoration. A `kid` derived from the clock alone
+        // collides whenever two keys are generated in the same second — two replicas booting
+        // together against an empty table, or a suite that resets between tests. A collision is
+        // worse than it looks: [privateKeyCache] is keyed by `kid` and populated with
+        // `computeIfAbsent`, so the second key publishes *its* public JWK while signing continues
+        // with the *first* key's private material, and every token it issues fails verification.
+        val kid = SigningKeyId(
+            "auth-signing-key-${KID_FORMAT.format(now)}-${now.epochSecond}-${uniqueSuffix()}",
+        )
         val ecKey = ECKeyGenerator(Curve.P_256)
             .keyID(kid.value)
             .generate()
@@ -146,6 +154,16 @@ class SigningKeyService(
     private companion object {
         val KID_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM").withZone(ZoneOffset.UTC)
+
+        /**
+         * Eight hex characters of randomness for the `kid`.
+         *
+         * A `kid` is an opaque identifier (RFC 7517 §4.5), so nothing depends on its shape; the
+         * date prefix is kept only because it makes a JWKS document readable. Collision
+         * resistance is all that is required of the suffix, and this is not key material.
+         */
+        fun uniqueSuffix(): String =
+            java.util.UUID.randomUUID().toString().substringBefore('-')
     }
 }
 

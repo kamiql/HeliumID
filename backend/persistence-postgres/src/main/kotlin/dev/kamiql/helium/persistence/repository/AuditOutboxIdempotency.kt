@@ -187,6 +187,10 @@ class OutboxRepositoryImpl(private val database: Database) : OutboxPort {
             is DomainEvent.ProviderLinked -> fields["provider"] = provider.value
             is DomainEvent.ProviderUnlinked -> fields["provider"] = provider.value
             is DomainEvent.RefreshTokenReuseDetected -> fields["client_id"] = clientId.value
+            is DomainEvent.AuthorizationRevoked -> {
+                fields["client_id"] = clientId.value
+                fields["count"] = revokedGrants.toString()
+            }
             is DomainEvent.TrustedDeviceAdded -> {
                 fields["device_id"] = deviceId.value.toString()
                 fields["expires_at"] = expiresAt.toString()

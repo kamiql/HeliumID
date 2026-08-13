@@ -11,6 +11,7 @@ import TotpBox from "./boxes/TotpBox.tsx"
 import PasskeysBox from "./boxes/PasskeysBox.tsx"
 import RecoveryCodesBox from "./boxes/RecoveryCodesBox.tsx"
 import LinkedProvidersBox from "./boxes/LinkedProvidersBox.tsx"
+import AuthorizedAppsBox from "./boxes/AuthorizedAppsBox.tsx"
 import SessionsBox from "./boxes/SessionsBox.tsx"
 import TrustedDevicesBox from "./boxes/TrustedDevicesBox.tsx"
 import DangerZoneBox from "./boxes/DangerZoneBox.tsx"
@@ -80,6 +81,7 @@ export default function AccountPage() {
 
                 <AccountBoxList title="Connections" columns={1}>
                     <LinkedProvidersBox />
+                    <AuthorizedAppsBox />
                 </AccountBoxList>
 
                 <AccountBoxList title="Devices" columns={1}>

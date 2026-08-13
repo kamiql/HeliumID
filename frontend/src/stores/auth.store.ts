@@ -35,6 +35,23 @@ function parseMethods(methods: string[]): MfaMethod[] {
     return parsed.length > 0 ? parsed : ["totp"]
 }
 
+/**
+ * Reads an `mfa_required` problem, or `null` when the error is something else.
+ *
+ * Shared by sign-in and step-up: both are two-phase and both are answered against a one-time
+ * handle, so the only thing that differs between them is which endpoint spends it.
+ */
+export function readMfaChallenge(error: unknown): MfaChallenge | null {
+    const heliumError = toHeliumError(error)
+    if (!heliumError.is(ErrorCode.MFA_REQUIRED) || !heliumError.transactionId) return null
+
+    return {
+        transactionId: heliumError.transactionId,
+        methods: parseMethods(heliumError.methods),
+        expiresAt: heliumError.problem?.expires_at ?? null,
+    }
+}
+
 type AuthState = {
     user: User | null
     initialized: boolean
@@ -107,15 +124,9 @@ export const useAuthStore = create<AuthState>((set) => ({
         } catch (error) {
             set({ loading: false })
 
-            const heliumError = toHeliumError(error)
-            if (heliumError.is(ErrorCode.MFA_REQUIRED) && heliumError.transactionId) {
-                return {
-                    transactionId: heliumError.transactionId,
-                    methods: parseMethods(heliumError.methods),
-                    expiresAt: heliumError.problem?.expires_at ?? null,
-                }
-            }
-            throw heliumError
+            const challenge = readMfaChallenge(error)
+            if (challenge) return challenge
+            throw toHeliumError(error)
         }
     },
 

@@ -14,6 +14,15 @@ object AuditEventType {
     const val LOGIN_FAILED = "auth.login-failed"
     const val MFA_COMPLETED = "auth.mfa-completed"
     const val MFA_FAILED = "auth.mfa-failed"
+
+    /**
+     * A step-up: an existing session re-proved identity, without a new one being created.
+     *
+     * Worth its own type rather than a second [LOGIN_SUCCEEDED]. Every sensitive operation is
+     * preceded by one of these, so a burst of them is how a takeover in progress looks from the
+     * audit log — and counting them as logins would bury that signal in ordinary sign-in traffic.
+     */
+    const val REAUTHENTICATED = "auth.reauthenticated"
     const val LOGOUT = "auth.logout"
     const val SESSION_REVOKED = "auth.session-revoked"
 
@@ -61,6 +70,15 @@ object AuditEventType {
     const val TOKEN_ISSUED = "oauth.token"
     const val TOKEN_REVOKED = "oauth.revoke"
     const val REFRESH_REUSE_DETECTED = "token.refresh-reuse-detected"
+
+    /**
+     * The account owner cut an application off from their account.
+     *
+     * Not [HIGH_SEVERITY]: it is user-initiated and removes access rather than granting it. It is
+     * still recorded, because it is the record that explains a client's sudden `invalid_grant`
+     * and, in volume, the trace somebody leaves while cleaning up after a takeover.
+     */
+    const val AUTHORIZATION_REVOKED = "account.authorization.revoke"
 
     // trusted devices
     const val TRUSTED_DEVICE_ADDED = "auth.trusted-device-added"
