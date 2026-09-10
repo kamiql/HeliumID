@@ -367,7 +367,7 @@ class IdentityFlows(
                 step("enforce-mfa-policy") { command, context, state ->
                     val user = state.require(userKey)
                     val enrolled = mfaMethods.enrolledMethods(user.id)
-                    val privileged = roles.permissionsOf(user.id).any { it in Permission.STEP_UP_REQUIRED }
+                    val privileged = roles.permissionsOf(user.id).any { it in Permission.PRIVILEGED_ACCOUNT }
 
                     val mfaRequired = when (mfaPolicy) {
                         MfaPolicy.OPTIONAL -> enrolled.isNotEmpty()
@@ -643,7 +643,7 @@ class IdentityFlows(
                     if (!command.rememberDevice) return@step StepResult.Continue
 
                     val user = state.require(userKey)
-                    val privileged = roles.permissionsOf(user.id).any { it in Permission.STEP_UP_REQUIRED }
+                    val privileged = roles.permissionsOf(user.id).any { it in Permission.PRIVILEGED_ACCOUNT }
                     if (privileged) {
                         // Silently ignored rather than rejected: the account still signs in, it
                         // just does not get the exemption. Failing here would turn a checkbox

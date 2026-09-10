@@ -25,6 +25,7 @@ import dev.kamiql.helium.domain.event.DomainEvent
 import dev.kamiql.helium.domain.event.VerificationPurpose
 import dev.kamiql.helium.domain.mfa.MfaFactor
 import dev.kamiql.helium.domain.mfa.MfaFactorStatus
+import dev.kamiql.helium.domain.mfa.MfaPolicy
 import dev.kamiql.helium.domain.mfa.MfaResponse
 import dev.kamiql.helium.domain.mfa.MfaType
 import dev.kamiql.helium.domain.mfa.MfaVerificationResult
@@ -548,7 +549,10 @@ private fun unused(): Nothing =
  * The services under test are the real ones: the point of the suite is the policy those classes
  * encode, so replacing any of them with a double would test the fixture instead.
  */
-internal class TrustedDeviceFixture(lifetimes: Lifetimes = Lifetimes.DEFAULT) {
+internal class TrustedDeviceFixture(
+    lifetimes: Lifetimes = Lifetimes.DEFAULT,
+    mfaPolicy: MfaPolicy = MfaPolicy.OPTIONAL,
+) {
 
     val users = InMemoryUserRepository()
     val credentials = InMemoryPasswordCredentialRepository()
@@ -595,6 +599,7 @@ internal class TrustedDeviceFixture(lifetimes: Lifetimes = Lifetimes.DEFAULT) {
         rateLimiter = AllowAllRateLimiter,
         random = random,
         lifetimes = lifetimes,
+        mfaPolicy = mfaPolicy,
     )
 
     private val runner = FlowRunner(transactions, outbox, audit)

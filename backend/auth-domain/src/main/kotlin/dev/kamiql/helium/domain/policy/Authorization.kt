@@ -35,12 +35,35 @@ value class Permission(val value: String) {
         /**
          * Operations that always demand recent reauthentication and, where enrolled, MFA.
          * Concept §4.10 "Account-takeover protections".
+         *
+         * This names *operations*, not accounts. Every account can change its own password, so
+         * holding one of these says nothing about how privileged the holder is — see
+         * [PRIVILEGED_ACCOUNT] for that question, and do not substitute one for the other.
          */
         val STEP_UP_REQUIRED: Set<Permission> = setOf(
             ACCOUNT_PASSWORD_CHANGE,
             ACCOUNT_EMAIL_CHANGE,
             ACCOUNT_MFA_MANAGE,
             ACCOUNT_PROVIDER_MANAGE,
+            ADMIN_USER_WRITE,
+            ADMIN_USER_DELETE,
+            ADMIN_ROLE_WRITE,
+            ADMIN_CLIENT_WRITE,
+        )
+
+        /**
+         * Permissions that make an *account* privileged: it can act on other people's accounts,
+         * roles or clients. This is what "privileged" means to the login flow — which MFA policy
+         * applies, and whether a trusted device may buy an exemption.
+         *
+         * Deliberately excludes the `account:*` self-service permissions. Those appear in
+         * [STEP_UP_REQUIRED] because changing your own password is a sensitive *operation*, but
+         * the built-in `USER` role grants four of them to every account in the system. Reading
+         * account privilege out of that set makes every user privileged, and under
+         * `MfaPolicy.REQUIRED_FOR_PRIVILEGED` that is a deadlock: a fresh account is refused login
+         * until it enrols a factor, and enrolling a factor requires being logged in.
+         */
+        val PRIVILEGED_ACCOUNT: Set<Permission> = setOf(
             ADMIN_USER_WRITE,
             ADMIN_USER_DELETE,
             ADMIN_ROLE_WRITE,
