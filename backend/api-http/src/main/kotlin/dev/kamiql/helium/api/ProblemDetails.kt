@@ -146,6 +146,10 @@ object ProblemMapper {
  * `Retry-After` and `WWW-Authenticate` are part of the contract, not decoration: concept §5.5
  * requires the bearer challenge header, and a `429` without `Retry-After` forces clients to
  * invent their own backoff.
+ *
+ * A caller that asks for HTML gets the same problem rendered as a page ([respondProblemHtml]).
+ * Status and headers are identical either way — only the body differs — so nothing a client
+ * branches on depends on the negotiation.
  */
 suspend fun ApplicationCall.respondProblem(error: AuthError, requestId: String? = null) {
     val problem = ProblemMapper.toProblem(error, requestId ?: correlationId)
@@ -163,6 +167,11 @@ suspend fun ApplicationCall.respondProblem(error: AuthError, requestId: String? 
             HttpHeaders.WWWAuthenticate,
             """Bearer realm="identity", error="$bearerError"""",
         )
+    }
+
+    if (prefersHtml()) {
+        respondProblemHtml(problem, status)
+        return
     }
 
     respond(status, problem)

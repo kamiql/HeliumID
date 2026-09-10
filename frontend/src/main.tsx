@@ -33,6 +33,7 @@ import AdminRolesPage from "./pages/dashboard/admin/roles/AdminRolesPage.tsx"
 import AdminAuditPage from "./pages/dashboard/admin/audit/AdminAuditPage.tsx"
 
 import ConsentPage from "./pages/oauth/ConsentPage.tsx"
+import ErrorPage from "./pages/ErrorPage.tsx"
 
 const ADMIN_SECTION = [
     Permissions.ADMIN_USER_READ,
@@ -45,6 +46,9 @@ const router = createBrowserRouter([
     {
         path: "/",
         element: <Layout />,
+        // Anything a route throws lands here instead of react-router's development screen,
+        // which names the component that failed.
+        errorElement: <ErrorPage />,
         children: [
             {
                 // Pathless: every page a signed-out visitor can land on shares one centred
@@ -83,6 +87,13 @@ const router = createBrowserRouter([
                         // against the API and renders the consent prompt the backend returns.
                         path: "oauth2/authorize",
                         element: <ConsentPage />,
+                    },
+                    {
+                        // Catch-all. Inside the auth shell so an unknown URL gets the same
+                        // centred card as every other page a signed-out visitor can reach,
+                        // rather than the empty layout this used to render.
+                        path: "*",
+                        element: <ErrorPage />,
                     },
                 ],
             },

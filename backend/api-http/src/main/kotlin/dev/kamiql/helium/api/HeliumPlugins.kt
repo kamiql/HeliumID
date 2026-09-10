@@ -59,7 +59,9 @@ fun Application.installHeliumPlugins(config: HttpSecurityConfig) {
     }
 
     install(DefaultHeaders) {
-        // This service serves JSON and redirects, never HTML it wants embedded elsewhere.
+        // JSON, redirects, and the error page a browser navigation lands on — never HTML this
+        // service wants embedded elsewhere, so framing stays denied. `nosniff` is why the error
+        // page is served as exactly `text/html; charset=utf-8`.
         header("X-Content-Type-Options", "nosniff")
         header("X-Frame-Options", "DENY")
         header("Referrer-Policy", "no-referrer")
