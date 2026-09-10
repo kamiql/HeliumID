@@ -71,6 +71,28 @@ internal suspend fun ApplicationCall.respondProblemHtml(problem: ProblemDetails,
 }
 
 /**
+ * The headline.
+ *
+ * [ProblemMapper.titleFor] falls back to the code with its underscores swapped for spaces, which
+ * reads as "Redirect uri invalid" — fine in a JSON body a developer is reading, wrong as the
+ * first line a person sees. These are phrased from the user's position: what happened to them,
+ * not what the server decided.
+ */
+private fun headline(problem: ProblemDetails): String = when (problem.code) {
+    "redirect_uri_invalid", "unauthorized_client", "invalid_scope" -> "This application cannot sign you in"
+    "oauth_state_invalid", "oauth_nonce_invalid", "pkce_verifier_invalid" -> "Sign-in could not be completed"
+    "invalid_token", "token_expired", "token_revoked" -> "This link is no longer valid"
+    "invalid_grant" -> "This sign-in has expired"
+    "provider_unavailable", "provider_denied", "provider_invalid_response" -> "Sign-in provider problem"
+    "auth_required" -> "Please sign in"
+    "not_found" -> "Page not found"
+    "rate_limited" -> "Too many attempts"
+    "temporarily_unavailable" -> "Service unavailable"
+    // `title` already carries ProblemMapper's wording for everything with a considered name.
+    else -> problem.title
+}
+
+/**
  * Copy for a code, kept deliberately in step with the SPA's `MESSAGES` map (`api/problem.ts`).
  *
  * Two renderers of the same error should not word it two ways. `detail` from the domain is the
@@ -147,7 +169,7 @@ private fun String.escapeHtml(): String = buildString(length) {
  * user was just looking at in either mode.
  */
 private fun renderErrorPage(problem: ProblemDetails): String {
-    val title = problem.title.escapeHtml()
+    val title = headline(problem).escapeHtml()
     val message = explain(problem).escapeHtml()
     val guidance = nextStep(problem).escapeHtml()
     val code = problem.code.escapeHtml()
