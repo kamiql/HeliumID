@@ -20,10 +20,11 @@ registerApiHandlers({
     onEmailUnverified: () => {
         useNoticeStore.getState().push("Verify your email address to complete that action.", "warning")
     },
-    onReauthenticationRequired: () => {
+    onReauthenticationRequired: (config) => {
         // Freshness only moves when the user signs in again, so this opens a full step-up
-        // prompt rather than a cosmetic password box.
-        useReauthStore.getState().request()
+        // prompt rather than a cosmetic password box. The request that provoked it is parked
+        // and replayed on success, so confirming finishes the action the user already started.
+        return useReauthStore.getState().request(config)
     },
 })
 

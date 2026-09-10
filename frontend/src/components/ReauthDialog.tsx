@@ -13,6 +13,7 @@ import { useId, useState } from "react"
 import PasswordField from "./PasswordField.tsx"
 import ErrorAlert from "./ErrorAlert.tsx"
 import MFADialog from "./MFADialog.tsx"
+import { api } from "../api/axios.ts"
 import { authApi } from "../api/auth.ts"
 import { readMfaChallenge, useAuthStore, type MfaChallenge } from "../stores/auth.store.ts"
 import { useReauthStore } from "../stores/reauth.store.ts"
@@ -37,6 +38,7 @@ import type { MfaSecondFactor, MfaVerifyRequest } from "../api/types.ts"
 export default function ReauthDialog() {
     const open = useReauthStore((state) => state.open)
     const close = useReauthStore((state) => state.close)
+    const takePending = useReauthStore((state) => state.takePending)
     const user = useAuthStore((state) => state.user)
 
     const [password, setPassword] = useState("")
@@ -55,13 +57,30 @@ export default function ReauthDialog() {
 
     if (!open || !user) return null
 
+    /**
+     * Step-up succeeded: send the request that provoked it.
+     *
+     * The freshness clock has moved, so the replay meets the requirement that rejected the
+     * original. It goes back through `api` rather than being re-sent as captured, because the
+     * request interceptor stamps a fresh CSRF token on every send and a replayed header set
+     * would carry a stale one.
+     */
     const finish = () => {
+        const pending = takePending()
+
         setPassword("")
         setChallenge(null)
         setChallengeVisible(false)
         setError(null)
-        close()
-        notify("Identity confirmed. Please retry what you were doing.", "success")
+
+        if (!pending) {
+            // No parked request — the prompt was opened by something that is not a replayable
+            // call. Confirming still moved the clock, so say so rather than staying silent.
+            notify("Identity confirmed.", "success")
+            return
+        }
+
+        api.request(pending.config).then(pending.resolve, pending.reject)
     }
 
     const handleSubmit = async () => {

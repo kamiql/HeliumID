@@ -1,4 +1,4 @@
-import axios, { type InternalAxiosRequestConfig } from "axios"
+import axios, { type AxiosResponse, type InternalAxiosRequestConfig } from "axios"
 import { useRequestStore } from "../stores/request.store.ts"
 import { currentCsrfToken } from "./csrf.ts"
 import { ErrorCode, toHeliumError, type HeliumError } from "./problem.ts"
@@ -16,20 +16,36 @@ export const api = axios.create({
 
 const SAFE_METHODS = new Set(["get", "head", "options"])
 
+/**
+ * Set on a config once it has been replayed after a step-up.
+ *
+ * A replay that is answered with `reauthentication_required` again is not a request that needs
+ * confirming — it is a loop, and without this flag it is an unbounded one.
+ */
+const REPLAYED = Symbol("helium.stepUpReplayed")
+
+type ReplayableConfig = InternalAxiosRequestConfig & { [REPLAYED]?: boolean }
+
 /** Reactions the app registers once, so this module never imports a store or the router. */
 type GlobalHandlers = {
     /** `auth_required` — the session is gone; drop local state and send the user to /login. */
     onSessionLost: () => void
     /** `email_unverified` — surface the resend UI wherever the app chooses to show it. */
     onEmailUnverified: () => void
-    /** `reauthentication_required` — the user must confirm their password again. */
-    onReauthenticationRequired: () => void
+    /**
+     * `reauthentication_required` — the user must confirm their password again.
+     *
+     * Receives the request that provoked the challenge and answers with the promise the caller
+     * keeps awaiting, so a confirmed step-up completes the action the user already asked for
+     * instead of telling them to perform it again.
+     */
+    onReauthenticationRequired: (config: InternalAxiosRequestConfig) => Promise<AxiosResponse>
 }
 
 let handlers: GlobalHandlers = {
     onSessionLost: () => {},
     onEmailUnverified: () => {},
-    onReauthenticationRequired: () => {},
+    onReauthenticationRequired: () => Promise.reject(new Error("no step-up handler registered")),
 }
 
 export function registerApiHandlers(next: Partial<GlobalHandlers>): void {
@@ -85,9 +101,17 @@ api.interceptors.response.use(
             case ErrorCode.EMAIL_UNVERIFIED:
                 handlers.onEmailUnverified()
                 break
-            case ErrorCode.REAUTHENTICATION_REQUIRED:
-                handlers.onReauthenticationRequired()
+            case ErrorCode.REAUTHENTICATION_REQUIRED: {
+                const config = (error as { config?: ReplayableConfig }).config
+                if (config && config[REPLAYED] !== true) {
+                    config[REPLAYED] = true
+
+                    // The only branch here that does not reject: the caller's promise is handed
+                    // to the step-up prompt and settles from the replayed request.
+                    return handlers.onReauthenticationRequired(config)
+                }
                 break
+            }
             default:
                 break
         }
