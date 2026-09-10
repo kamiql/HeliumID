@@ -45,6 +45,11 @@ RUN --mount=type=cache,target=/gradle-home \
 
 COPY . .
 
+# Repeated after `COPY . .`, which overwrites the copy fixed up above with the one from the build
+# context — where `gradlew` is mode 100644 in git and loses the bit again. Without this the next
+# RUN dies on `./gradlew: Permission denied`, and the earlier chmod reads as though it covered it.
+RUN sed -i 's/\r$//' ./gradlew && chmod +x ./gradlew
+
 # `installDist` rather than a fat jar: it lays out `bin/helium-id` plus a `lib/` directory, so the
 # dependency jars land in their own image layer and a code-only change re-uploads kilobytes instead
 # of the whole shaded artifact. It also keeps the classpath inspectable, which matters when you are
