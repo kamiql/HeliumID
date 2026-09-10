@@ -157,11 +157,22 @@ services:
     environment:
       <<: *backend-env
       HELIUM_ROLE: worker
-    # The worker still binds 8080 purely so the image's HEALTHCHECK has something to hit. A
-    # background process with no readiness signal is a process you cannot tell apart from a hung
-    # one, which is the wrong property for the component that delivers verification mail.
-    expose:
-      - "8080"
+    # The image's HEALTHCHECK curls 127.0.0.1:8080/health, and the worker never binds it:
+    # HELIUM_ROLE=worker parks in awaitCancellation() before embeddedServer starts (app/Main.kt).
+    # Inherited unchanged, the probe fails forever and the container settles on `unhealthy` while
+    # delivering mail perfectly well — a permanently red signal nobody can act on, which is worse
+    # than none because it hides the next real outage.
+    #
+    # Disabled rather than replaced with a process-liveness check: `pgrep java` here would be
+    # green whenever the JVM is up, including when the dispatcher thread is wedged, and a probe
+    # that cannot fail is a lie told on a schedule. Liveness for this container is the process
+    # exiting, which `restart: unless-stopped` already handles.
+    #
+    # The comment this replaces asserted the worker binds 8080. It does not. Giving the worker a
+    # real readiness surface — bind 8080 for role=worker, or report outbox lag — is the actual
+    # fix, and it belongs in the application rather than here.
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,6 +195,29 @@ services:
   # Building here rather than bind-mounting a host `frontend/dist` means production can never be
   # serving whatever a developer last compiled locally, and the deploy host needs no Node
   # toolchain.
+  # Docker seeds a fresh named volume — ownership included — from the image of the container
+  # that first claims it. On a clean deploy that container is Caddy, not the publisher below:
+  # its `frontend_dist:/srv:ro` mount is read-only, so the volume is left root-owned. The
+  # publisher runs as uid 10002 and cannot write to its own volume, Caddy then waits forever on
+  # an exit 0 that never comes, and the whole stack stalls with an empty asset directory.
+  #
+  # One idempotent chown as root, gated ahead of the publisher, fixes the bootstrap without
+  # giving up either property that made it awkward: the publisher stays unprivileged and the
+  # edge stays read-only. The uid is the `web` user from frontend/Dockerfile — change both
+  # together.
+  frontend-assets-init:
+    image: alpine:3.21
+    volumes:
+      - frontend_dist:/srv
+    command: ["chown", "10002:10002", "/srv"]
+    restart: "no"
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 64M
+
   frontend-assets:
     build:
       context: ./frontend
@@ -191,6 +225,9 @@ services:
     image: helium-id-frontend:${HELIUM_VERSION:-latest}
     volumes:
       - frontend_dist:/srv
+    depends_on:
+      frontend-assets-init:
+        condition: service_completed_successfully
     # Not `unless-stopped`: this container is supposed to exit 0. Restarting it in a loop would
     # rewrite the asset directory under a running Caddy.
     restart: "no"
