@@ -734,7 +734,7 @@ data class UserInfoDto(
     val email: String? = null,
     @SerialName("email_verified") val emailVerified: Boolean? = null,
     @SerialName("updated_at") val updatedAt: Long? = null,
-    @SerialName("mailcow_template") val mailcowTemplate: String? = null,
+    val allow: List<String> = listOf("GET")
 )
 
 /** Consent screen payload for the built-in UI. */
