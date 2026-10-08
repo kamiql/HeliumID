@@ -221,13 +221,15 @@ fun Route.oauthRoutes(dependencies: HeliumApiDependencies) = route("/oauth2") {
     }
 }
 
+
+
 /**
  * `GET /userinfo` (OIDC Core §5.3).
  *
  * Bearer only, and the claims returned are gated on the token's scopes.
  */
 fun Route.userInfoRoute(dependencies: HeliumApiDependencies) {
-    get("/userinfo") {
+    post("/userinfo") {
         val (actor, _) = call.heliumContext(dependencies)
         val (userId, scopes) = when (actor) {
             is Principal.TokenBearer -> actor.userId to actor.scopes
@@ -235,17 +237,17 @@ fun Route.userInfoRoute(dependencies: HeliumApiDependencies) {
             // were issued.
             else -> {
                 call.respondProblem(AuthError.AuthenticationRequired)
-                return@get
+                return@post
             }
         }
         if (Scope.OPENID !in scopes) {
             call.respondProblem(AuthError.Forbidden("scope:openid"))
-            return@get
+            return@post
         }
         val user = dependencies.users.findById(userId)
         if (user == null) {
             call.respondProblem(AuthError.AuthenticationRequired)
-            return@get
+            return@post
         }
         val info = buildUserInfo(user, scopes)
         call.response.header(HttpHeaders.CacheControl, "no-store")
