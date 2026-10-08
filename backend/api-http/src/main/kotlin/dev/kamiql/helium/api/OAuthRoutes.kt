@@ -258,8 +258,7 @@ fun Route.userInfoRoute(dependencies: HeliumApiDependencies) {
                 familyName = info.familyName,
                 email = info.email,
                 emailVerified = info.emailVerified,
-                updatedAt = info.updatedAt,
-                mailcowTemplate = "default"
+                updatedAt = info.updatedAt
             ),
         )
     }
