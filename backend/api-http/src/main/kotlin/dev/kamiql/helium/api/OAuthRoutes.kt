@@ -249,6 +249,7 @@ fun Route.userInfoRoute(dependencies: HeliumApiDependencies) {
         }
         val info = buildUserInfo(user, scopes)
         call.response.header(HttpHeaders.CacheControl, "no-store")
+        call.response.header(HttpHeaders.Allow, "GET")
         call.respond(
             UserInfoDto(
                 sub = info.sub,

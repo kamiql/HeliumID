@@ -733,8 +733,7 @@ data class UserInfoDto(
     @SerialName("family_name") val familyName: String? = null,
     val email: String? = null,
     @SerialName("email_verified") val emailVerified: Boolean? = null,
-    @SerialName("updated_at") val updatedAt: Long? = null,
-    val allow: List<String> = listOf("GET")
+    @SerialName("updated_at") val updatedAt: Long? = null
 )
 
 /** Consent screen payload for the built-in UI. */
