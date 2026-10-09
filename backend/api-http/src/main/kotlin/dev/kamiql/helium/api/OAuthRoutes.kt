@@ -229,7 +229,7 @@ fun Route.oauthRoutes(dependencies: HeliumApiDependencies) = route("/oauth2") {
  * Bearer only, and the claims returned are gated on the token's scopes.
  */
 fun Route.userInfoRoute(dependencies: HeliumApiDependencies) {
-    post("/userinfo") {
+    get("/userinfo") {
         val (actor, _) = call.heliumContext(dependencies)
         val (userId, scopes) = when (actor) {
             is Principal.TokenBearer -> actor.userId to actor.scopes
@@ -237,17 +237,17 @@ fun Route.userInfoRoute(dependencies: HeliumApiDependencies) {
             // were issued.
             else -> {
                 call.respondProblem(AuthError.AuthenticationRequired)
-                return@post
+                return@get
             }
         }
         if (Scope.OPENID !in scopes) {
             call.respondProblem(AuthError.Forbidden("scope:openid"))
-            return@post
+            return@get
         }
         val user = dependencies.users.findById(userId)
         if (user == null) {
             call.respondProblem(AuthError.AuthenticationRequired)
-            return@post
+            return@get
         }
         val info = buildUserInfo(user, scopes)
         call.response.header(HttpHeaders.CacheControl, "no-store")
